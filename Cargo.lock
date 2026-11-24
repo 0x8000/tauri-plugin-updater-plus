@@ -3090,7 +3090,6 @@ dependencies = [
  "osakit",
  "percent-encoding",
  "reqwest",
- "scopeguard",
  "semver",
  "serde",
  "serde_json",

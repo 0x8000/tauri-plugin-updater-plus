@@ -1,5 +1,10 @@
 set shell := ["bash", "-c"]
 
+mod bdd "./tests/bdd"
+
+alias test-bdd := bdd::test
+alias test-one := bdd::test-one
+
 # Run all unit tests across feature combinations
 test:
     cargo test

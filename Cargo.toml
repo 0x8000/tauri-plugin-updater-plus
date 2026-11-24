@@ -22,6 +22,7 @@ exclude = [
   "/justfile",
   "/release-please-config.json",
   "/rust-toolchain.toml",
+  "/tests",
 ]
 
 [workspace]
@@ -40,7 +41,6 @@ plugin = [
   "dep:osakit",
   "dep:percent-encoding",
   "dep:reqwest",
-  "dep:scopeguard",
   "dep:tar",
   "dep:tauri",
   "dep:tempfile",
@@ -60,6 +60,11 @@ name = "benchmark_update"
 path = "examples/benchmark_update.rs"
 required-features = ["plugin", "cli"]
 
+[[example]]
+name = "updater_client"
+path = "examples/updater_client.rs"
+required-features = ["plugin", "cli"]
+
 [dependencies]
 aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
 base64 = "0.22"
@@ -73,7 +78,6 @@ lazy-regex = "3"
 minisign-verify = { version = "0.2", optional = true }
 percent-encoding = { version = "2", optional = true }
 reqwest = { version = "0.13", features = ["json", "stream"], optional = true }
-scopeguard = { version = "1", optional = true }
 semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

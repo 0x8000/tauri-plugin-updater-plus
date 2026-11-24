@@ -24,6 +24,15 @@ repos:
       - id: mixed-line-ending
       - id: trailing-whitespace
 
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.8
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+        types_or: [python, pyi]
+      - id: ruff-format
+        types_or: [python, pyi]
+
   - repo: local
     hooks:
       - id: rustfmt

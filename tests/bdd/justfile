@@ -1,0 +1,47 @@
+set shell := ["bash", "-c"]
+set working-directory := "."
+
+venv_bin := ".venv/bin"
+export PATH := venv_bin + x':${PATH}'
+export PYTHONPATH := "src"
+
+venv:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ ! -x .venv/bin/python ]]; then
+      python3 -m venv .venv
+    fi
+    "{{ venv_bin }}/pip" install --upgrade pip
+    "{{ venv_bin }}/pip" install -e ".[dev]"
+    "{{ venv_bin }}/python" -c "import behave, docker, requests, testcontainers; print('[bdd] venv ok', flush=True)"
+
+[working-directory("../..")]
+binaries:
+    cargo build --no-default-features --features cli --bin blockmap-gen
+    cargo build --all-features --example updater_client
+
+build-images:
+    python scripts/build_images.py
+
+cleanup:
+    python scripts/cleanup_bdd_docker.py
+
+cleanup-dry-run:
+    python scripts/cleanup_bdd_docker.py --dry-run
+
+test: binaries build-images
+    python scripts/run_scenario.py
+
+test-one scenario: binaries build-images
+    python scripts/run_scenario.py "{{ scenario }}"
+
+list-scenarios:
+    python scripts/list_scenarios.py
+
+test-unit:
+    python -m unittest discover -s tests -v
+
+lint:
+    python -m ruff check features scripts src/updater_plus_bdd tests docker/cdn-gateway
+    python -m ruff format --check features scripts src/updater_plus_bdd tests docker/cdn-gateway
+    just test-unit

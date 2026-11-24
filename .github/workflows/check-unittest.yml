@@ -61,6 +61,55 @@ jobs:
         run: |
           cargo test --all-features
 
+  bdd:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Build CLI and updater harness binaries
+        run: |
+          cargo build --no-default-features --features cli --bin blockmap-gen
+          cargo build --all-features --example updater_client
+
+      - name: Setup BDD Python environment
+        run: |
+          python3 -m venv tests/bdd/.venv
+          tests/bdd/.venv/bin/pip install --upgrade pip
+          tests/bdd/.venv/bin/pip install -e "tests/bdd[dev]"
+
+      - name: Lint and unit-test BDD harness
+        run: |
+          tests/bdd/.venv/bin/ruff check tests/bdd/features tests/bdd/scripts tests/bdd/src tests/bdd/tests tests/bdd/docker/cdn-gateway
+          tests/bdd/.venv/bin/ruff format --check tests/bdd/features tests/bdd/scripts tests/bdd/src tests/bdd/tests tests/bdd/docker/cdn-gateway
+          PYTHONPATH=tests/bdd/src tests/bdd/.venv/bin/python -m unittest discover -s tests/bdd/tests -v
+
+      - name: Build BDD Docker images
+        run: |
+          tests/bdd/.venv/bin/python tests/bdd/scripts/build_images.py
+
+      - name: Run BDD scenario suite
+        run: |
+          tests/bdd/.venv/bin/python tests/bdd/scripts/run_scenario.py
+
+      - name: Cleanup BDD Docker resources
+        if: always()
+        run: |
+          tests/bdd/.venv/bin/python tests/bdd/scripts/cleanup_bdd_docker.py
+
   clippy:
     runs-on: ubuntu-latest
     steps:

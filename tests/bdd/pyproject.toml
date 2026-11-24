@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "updater-plus-bdd"
+version = "0.2.0"
+description = "End-to-end Behave BDD suite for tauri-plugin-updater-plus driven by testcontainers-python and OOP drivers"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "behave>=1.2.6",
+  "docker>=7.0",
+  "requests>=2.31",
+  "testcontainers>=4.0",
+]
+
+[project.optional-dependencies]
+dev = ["ruff>=0.9"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+updater_plus_bdd = ["py.typed"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "features", "scripts", "tests"]
+extend-exclude = [".venv", ".tmp", "**/__pycache__"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "W"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"features/**" = ["E402"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
