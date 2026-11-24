@@ -3,43 +3,61 @@
 [![crates.io](https://img.shields.io/crates/v/tauri-plugin-updater-plus.svg)](https://crates.io/crates/tauri-plugin-updater-plus)
 [![docs.rs](https://docs.rs/tauri-plugin-updater-plus/badge.svg)](https://docs.rs/tauri-plugin-updater-plus)
 
-Electron-style blockmap differential updater plugin and CLI for Tauri v3 applications.
+Differential in-app updates for Tauri v3 applications.
 
-## How It Works
+| Platform | Supported |
+| -------- | --------- |
+| Linux    | ✓         |
+| Windows  | ✓         |
+| macOS    | ✓         |
+| Android  | x         |
+| iOS      | x         |
 
-1. **Content-Defined Chunking (FastCDC)**: `blockmap-gen` splits release
-   artifacts into content-defined chunks (default 16 KiB min / 64 KiB avg / 256
-   KiB max), hashes each chunk with SHA-256 (`aws-lc-rs`), and emits a
-   gzip-compressed Electron v2 `.blockmap` file alongside the release manifest.
-2. **Manifest Compatibility**: Reads both Tauri `latest.json` (with optional
-   `sha512`, `size`, `blockmap_url`, and `blockmap_size` fields plus minisign
-   signatures) and Electron `latest*.yml` (`latest.yml`, `latest-linux.yml`,
-   `latest-mac.yml`).
-3. **Differential Download & Reconstruction**: Compares the locally cached base
-   package (or the running `$APPIMAGE` on Linux) against the remote `.blockmap`,
-   copies and SHA-256-verifies unchanged local blocks, fetches only changed byte
-   ranges via HTTP `Range`, and verifies the reconstructed package with SHA-512,
-   optional streaming minisign signatures, and native OS code signing (macOS
-   `codesign` Designated Requirement / Windows Authenticode) before caching and
-   installing it.
+## Install
 
-## Installation
+_This plugin requires a Rust version of at least **1.95**._
 
-Add the plugin to your Tauri app's `src-tauri/Cargo.toml`:
+There are three general methods of installation that we can recommend:
+
+1. Use crates.io (easiest, and requires you to trust that our publishing pipeline worked)
+2. Pull sources directly from GitHub using git tags / revision hashes (most secure)
+3. Git submodule install this repo in your Tauri project and then use file protocol to ingest the source (most secure, but inconvenient to use)
+
+Install the core plugin by adding the following to your `Cargo.toml` file:
+
+`src-tauri/Cargo.toml`
 
 ```toml
-[dependencies]
-tauri-plugin-updater-plus = "0.2"
+# you can add the dependency in the `[dependencies]` section if you do not target mobile
+[target."cfg(not(any(target_os = \"android\", target_os = \"ios\")))".dependencies]
+tauri-plugin-updater-plus = "0.3"
+# alternatively with Git:
+tauri-plugin-updater-plus = { git = "https://github.com/0x8000/tauri-plugin-updater-plus", branch = "master" }
 ```
 
-Register the plugin in `src-tauri/src/lib.rs`:
+The TypeScript guest bindings (built on `@tauri-apps/api/core`) are in [`guest-js/index.ts`](guest-js/index.ts) and can be imported directly into your frontend project.
+
+## Usage
+
+First, register the core plugin with Tauri:
+
+`src-tauri/src/lib.rs`
 
 ```rust
-tauri::Builder::default()
-    .plugin(tauri_plugin_updater_plus::Builder::new().build())
+pub fn run() {
+    tauri::Builder::default()
+        .setup(|app| {
+            #[cfg(desktop)]
+            app.handle()
+                .plugin(tauri_plugin_updater_plus::Builder::new().build())?;
+            Ok(())
+        })
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
 ```
 
-Configure endpoints in `src-tauri/tauri.conf.json`:
+Configure update endpoints in `src-tauri/tauri.conf.json`:
 
 ```json
 {
@@ -65,36 +83,31 @@ Enable the default permissions in `src-tauri/capabilities/default.json`:
 }
 ```
 
-## Hosting Support
+Afterwards, all plugin APIs are available through the JavaScript/TypeScript guest bindings:
 
-- **Static File Servers (Nginx / Caddy / Apache)**: Upload the manifest
-  (`latest.json` or `latest*.yml`), package artifact, and `<artifact>.blockmap`
-  in the same directory. Multi-range `multipart/byteranges` is used
-  automatically when supported, degrading cleanly to concurrent single-range or
-  full download.
-- **GitHub Releases & Object Stores (S3 / Cloudflare R2 / OSS / Azure Blob /
-  GCS)**: Upload the manifest, artifact, and `<artifact>.blockmap` as release
-  assets or bucket objects. Known single-range hosts automatically skip
-  multi-range probes and use concurrent single-range HTTP `Range` requests;
-  servers returning `200 OK` on multi-range requests automatically degrade to
-  single-range `206` before falling back to full download. Resolved `302` CDN
-  URLs (e.g. `objects.githubusercontent.com`) are reused across range requests,
-  re-resolved transparently if a signed token expires, and cross-origin
-  `Authorization`/`Cookie` headers are stripped.
+```ts
+import { check } from './guest-js'
+import { relaunch } from '@tauri-apps/plugin-process'
 
-## CLI Usage (`blockmap-gen`)
+const update = await check()
+if (update) {
+  await update.downloadAndInstall()
+  // Relaunch the app on macOS and Linux to run the newly installed version
+  await relaunch()
+}
+```
 
-Download prebuilt binaries from [GitHub Releases](https://github.com/0x8000/tauri-plugin-updater-plus/releases),
-or install from source without Tauri dependencies:
+## Generating Release Artifacts (`blockmap-gen`)
 
-```bash
+To publish differential updates, generate a `.blockmap` and manifest alongside your release files using `blockmap-gen`.
+
+Download prebuilt binaries from [GitHub Releases](https://github.com/0x8000/tauri-plugin-updater-plus/releases), or install via Cargo:
+
+```sh
 cargo install tauri-plugin-updater-plus --no-default-features --features cli
 ```
 
-```bash
-# Generate an Electron v2 .blockmap for an artifact
-blockmap-gen generate --input MyApp.AppImage
-
+```sh
 # Generate a .blockmap and Tauri/Electron release manifest
 blockmap-gen manifest \
   --input MyApp-0.2.0.AppImage \
@@ -104,14 +117,18 @@ blockmap-gen manifest \
   --target linux-x86_64 \
   --output latest.json
 
-# Measure differential savings between two blockmaps
-blockmap-gen diff \
-  --old-blockmap v1.blockmap \
-  --new-blockmap v2.blockmap
+# Generate only a .blockmap file
+blockmap-gen generate --input MyApp.AppImage
 
-# Pack a directory into a per-entry deflated ZIP friendly to blockmap updates
+# Pack a macOS .app bundle into a differential-friendly ZIP
 blockmap-gen pack-zip --dir MyApp.app --output MyApp.app.zip
 ```
+
+Upload the release artifact, `<artifact>.blockmap`, and manifest (`latest.json` or `latest*.yml`) together to your static server, GitHub Releases, or object store (S3 / R2 / OSS / GCS).
+
+## Contributing
+
+PRs accepted.
 
 ## License
 
