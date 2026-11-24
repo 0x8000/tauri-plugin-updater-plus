@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/0x8000/tauri-plugin-updater-plus/compare/v0.3.0...v0.4.0) (2026-11-24)
+
+
+### Features
+
+* support plugins.updater config and native Android APK updates ([b56660c](https://github.com/0x8000/tauri-plugin-updater-plus/commit/b56660c93b75117e51e9543c5a7955ee55a8e161))
+
 ## [0.3.0](https://github.com/0x8000/tauri-plugin-updater-plus/compare/v0.2.1...v0.3.0) (2026-11-24)
 
 
