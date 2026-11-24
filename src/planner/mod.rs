@@ -1,0 +1,239 @@
+use std::collections::HashMap;
+
+use crate::Result;
+use crate::blockmap::BlockMap;
+
+#[cfg(test)]
+mod tests;
+
+/// Single contiguous operation required to reconstruct a target artifact.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlanOperation {
+    /// Copy an unchanged byte span from the local old artifact.
+    Copy {
+        /// Byte offset inside the local old artifact.
+        old_offset: u64,
+        /// Byte offset inside the reconstructed new artifact.
+        new_offset: u64,
+        /// Number of bytes to copy.
+        length: u64,
+    },
+    /// Download a changed or newly inserted byte span from the remote artifact.
+    Download {
+        /// Byte offset inside the remote and reconstructed new artifact.
+        offset: u64,
+        /// Number of bytes to download.
+        length: u64,
+    },
+}
+
+/// Tuning knobs for differential plan generation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PlanOptions {
+    /// Coalesce adjacent Download ranges separated by a gap smaller than or equal to this size.
+    pub max_range_gap: u64,
+}
+
+/// Coalesced copy/download execution plan derived from two [`BlockMap`]s.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DownloadPlan {
+    /// Ordered copy and download operations covering the target artifact.
+    pub operations: Vec<PlanOperation>,
+    /// Total target artifact size in bytes.
+    pub total_size: u64,
+    /// Bytes scheduled to be reused from the local old artifact.
+    pub reused_bytes: u64,
+    /// Bytes scheduled to be downloaded over HTTP Range requests.
+    pub download_bytes: u64,
+}
+
+impl DownloadPlan {
+    /// Builds a differential plan from `old_map` to `new_map`.
+    pub fn build(old_map: &BlockMap, new_map: &BlockMap, options: PlanOptions) -> Result<Self> {
+        old_map.validate()?;
+        new_map.validate()?;
+
+        let old_index = Self::index_old_blocks(old_map);
+        let mut operations: Vec<PlanOperation> = Vec::new();
+        let mut reused_bytes = 0u64;
+        let mut download_bytes = 0u64;
+        let mut last_old_end = 0u64;
+
+        for file in &new_map.files {
+            let mut new_cursor = file.offset;
+            for (checksum, &size) in file.checksums.iter().zip(&file.sizes) {
+                let len = u64::from(size);
+                if let Some(offsets) = old_index.get(&(checksum.as_str(), size)) {
+                    let old_offset = Self::pick_nearest_offset(offsets, last_old_end);
+                    Self::push_copy(&mut operations, old_offset, new_cursor, len);
+                    last_old_end = old_offset.saturating_add(len);
+                    reused_bytes = reused_bytes.saturating_add(len);
+                } else {
+                    Self::push_download(&mut operations, new_cursor, len);
+                    download_bytes = download_bytes.saturating_add(len);
+                }
+                new_cursor = new_cursor.saturating_add(len);
+            }
+        }
+
+        if options.max_range_gap > 0 {
+            Self::coalesce_small_gaps(
+                &mut operations,
+                options.max_range_gap,
+                &mut reused_bytes,
+                &mut download_bytes,
+            );
+        }
+
+        Ok(Self {
+            operations,
+            total_size: new_map.total_size(),
+            reused_bytes,
+            download_bytes,
+        })
+    }
+
+    /// Returns the number of discrete HTTP byte ranges needed by this plan.
+    pub fn range_count(&self) -> usize {
+        self.operations
+            .iter()
+            .filter(|op| matches!(op, PlanOperation::Download { .. }))
+            .count()
+    }
+
+    /// Returns true when the delta is too large to justify differential patching.
+    pub fn should_fallback_to_full(&self, threshold: f64) -> bool {
+        if self.total_size == 0 || self.reused_bytes == 0 {
+            return true;
+        }
+        let ratio = self.download_bytes as f64 / self.total_size as f64;
+        ratio >= threshold
+    }
+
+    /// Returns the percentage of artifact bytes reused locally.
+    pub fn saved_percent(&self) -> f64 {
+        if self.total_size == 0 {
+            return 0.0;
+        }
+        (self.reused_bytes as f64 / self.total_size as f64) * 100.0
+    }
+
+    fn index_old_blocks(old_map: &BlockMap) -> HashMap<(&str, u32), Vec<u64>> {
+        let mut index: HashMap<(&str, u32), Vec<u64>> = HashMap::new();
+        for file in &old_map.files {
+            let mut cursor = file.offset;
+            for (checksum, &size) in file.checksums.iter().zip(&file.sizes) {
+                index
+                    .entry((checksum.as_str(), size))
+                    .or_default()
+                    .push(cursor);
+                cursor = cursor.saturating_add(u64::from(size));
+            }
+        }
+        index
+    }
+
+    fn pick_nearest_offset(offsets: &[u64], cursor: u64) -> u64 {
+        let mut best = offsets[0];
+        let mut best_distance = best.abs_diff(cursor);
+        for &candidate in &offsets[1..] {
+            let distance = candidate.abs_diff(cursor);
+            if distance < best_distance {
+                best = candidate;
+                best_distance = distance;
+            }
+        }
+        best
+    }
+
+    fn push_copy(
+        operations: &mut Vec<PlanOperation>,
+        old_offset: u64,
+        new_offset: u64,
+        length: u64,
+    ) {
+        if let Some(PlanOperation::Copy {
+            old_offset: prev_old,
+            new_offset: prev_new,
+            length: prev_len,
+        }) = operations.last_mut()
+            && prev_old.saturating_add(*prev_len) == old_offset
+            && prev_new.saturating_add(*prev_len) == new_offset
+        {
+            *prev_len = prev_len.saturating_add(length);
+            return;
+        }
+        operations.push(PlanOperation::Copy {
+            old_offset,
+            new_offset,
+            length,
+        });
+    }
+
+    fn push_download(operations: &mut Vec<PlanOperation>, offset: u64, length: u64) {
+        if let Some(PlanOperation::Download {
+            offset: prev_offset,
+            length: prev_len,
+        }) = operations.last_mut()
+            && prev_offset.saturating_add(*prev_len) == offset
+        {
+            *prev_len = prev_len.saturating_add(length);
+            return;
+        }
+        operations.push(PlanOperation::Download { offset, length });
+    }
+
+    fn coalesce_small_gaps(
+        operations: &mut Vec<PlanOperation>,
+        max_gap: u64,
+        reused_bytes: &mut u64,
+        download_bytes: &mut u64,
+    ) {
+        let mut merged: Vec<PlanOperation> = Vec::with_capacity(operations.len());
+        let mut index = 0;
+        while index < operations.len() {
+            if index + 1 < operations.len()
+                && let Some(PlanOperation::Download {
+                    offset: left_off,
+                    length: left_len,
+                }) = merged.last()
+                && let (
+                    PlanOperation::Copy {
+                        new_offset: gap_off,
+                        length: gap_len,
+                        ..
+                    },
+                    PlanOperation::Download {
+                        offset: right_off,
+                        length: right_len,
+                    },
+                ) = (&operations[index], &operations[index + 1])
+                && *gap_len <= max_gap
+                && left_off.saturating_add(*left_len) == *gap_off
+                && gap_off.saturating_add(*gap_len) == *right_off
+            {
+                let gap = *gap_len;
+                let extra = gap.saturating_add(*right_len);
+                if let Some(PlanOperation::Download { length, .. }) = merged.last_mut() {
+                    *length = length.saturating_add(extra);
+                }
+                *reused_bytes = reused_bytes.saturating_sub(gap);
+                *download_bytes = download_bytes.saturating_add(gap);
+                index += 2;
+                continue;
+            }
+            match operations[index].clone() {
+                PlanOperation::Copy {
+                    old_offset,
+                    new_offset,
+                    length,
+                } => Self::push_copy(&mut merged, old_offset, new_offset, length),
+                PlanOperation::Download { offset, length } => {
+                    Self::push_download(&mut merged, offset, length);
+                }
+            }
+            index += 1;
+        }
+        *operations = merged;
+    }
+}

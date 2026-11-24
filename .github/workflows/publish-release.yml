@@ -1,0 +1,131 @@
+name: publish-release
+
+on:
+  push:
+    tags:
+      - "v*"
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_GIT_FETCH_WITH_CLI: true
+  CARGO_NET_RETRY: 10
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  RUSTUP_MAX_RETRIES: 10
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  ensure-managed-release:
+    name: Ensure Managed Release
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source ref
+        uses: actions/checkout@v7
+
+      - name: Generate release body
+        run: |
+          mkdir -p release
+          sed \
+            -e "s|REPOSITORY|${GITHUB_REPOSITORY}|g" \
+            -e "s|RELEASE_TAG|${{ github.ref_type == 'tag' && github.ref_name || 'nightly' }}|g" \
+            ./.github/release_template.md > release/body.md
+
+      - name: Create or update managed release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_NAME: ${{ github.ref_type == 'tag' && github.ref_name || 'nightly' }}
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || 'nightly' }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            release_flags=(--latest)
+          else
+            release_flags=(--prerelease --latest=false)
+          fi
+
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$RELEASE_NAME" \
+              --notes-file release/body.md \
+              "${release_flags[@]}"
+          else
+            gh release create "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$RELEASE_NAME" \
+              --notes-file release/body.md \
+              "${release_flags[@]}"
+          fi
+
+  upload-assets:
+    needs:
+      - ensure-managed-release
+    name: ${{ matrix.target }}
+    permissions:
+      contents: write
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+            use_cross: false
+            setup_cross_toolchain: false
+          - target: aarch64-apple-darwin
+            os: macos-14
+            use_cross: false
+            setup_cross_toolchain: false
+          - target: x86_64-pc-windows-msvc
+            os: windows-2022
+            use_cross: false
+            setup_cross_toolchain: false
+          - target: aarch64-pc-windows-msvc
+            os: windows-2022
+            use_cross: false
+            setup_cross_toolchain: false
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            use_cross: true
+            setup_cross_toolchain: false
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            use_cross: true
+            setup_cross_toolchain: false
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup CLI build toolchain
+        uses: ./.github/actions/setup-cli-build
+        with:
+          target: ${{ matrix.target }}
+          use_cross: ${{ matrix.use_cross }}
+          setup_cross_toolchain: ${{ matrix.setup_cross_toolchain }}
+
+      - uses: taiki-e/upload-rust-binary-action@v1.30.2
+        with:
+          package: tauri-plugin-updater-plus
+          bin: blockmap-gen
+          profile: release
+          target: ${{ matrix.target }}
+          tar: all
+          zip: windows
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: ${{ github.ref_type == 'tag' && github.ref || 'refs/tags/nightly' }}
+          no-default-features: true
+          features: cli

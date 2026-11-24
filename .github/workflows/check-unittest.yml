@@ -1,0 +1,81 @@
+name: check-unittest
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  cargo-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cargo fmt check
+        run: |
+          cargo fmt --all -- --check
+
+      - name: Cargo test (default plugin features)
+        run: |
+          cargo test
+
+      - name: Cargo test (CLI only, no default features)
+        run: |
+          cargo test --no-default-features --features cli
+
+      - name: Cargo test (all features)
+        run: |
+          cargo test --all-features
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+          components: clippy
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cargo clippy (all features)
+        run: |
+          cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Cargo clippy (CLI only)
+        run: |
+          cargo clippy --no-default-features --features cli --bin blockmap-gen -- -D warnings
+
+  try-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check release
+        run: |
+          cargo publish --workspace --dry-run

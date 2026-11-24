@@ -1,0 +1,10 @@
+"$schema" = "schemas/schema.json"
+
+[default]
+description = "Default permissions for the updater-plus plugin"
+permissions = [
+  "allow-check",
+  "allow-download",
+  "allow-install",
+  "allow-download-and-install",
+]
