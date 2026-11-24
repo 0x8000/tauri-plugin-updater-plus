@@ -1,6 +1,6 @@
 [package]
 name = "tauri-plugin-updater-plus"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.95"
 description = "Electron-style blockmap differential updater plugin and CLI for Tauri v3 applications"
