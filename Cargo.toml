@@ -31,23 +31,22 @@ exclude = [
 strip = true
 
 [features]
-default = ["plugin"]
-plugin = [
+default = ["plugin", "http"]
+engine = [
   "dep:bytes",
   "dep:futures-util",
-  "dep:http",
   "dep:infer",
   "dep:minisign-verify",
   "dep:osakit",
   "dep:percent-encoding",
-  "dep:reqwest",
   "dep:tar",
-  "dep:tauri",
   "dep:tempfile",
   "dep:tokio",
   "dep:tracing",
   "dep:windows-sys",
 ]
+http = ["engine", "dep:http", "dep:reqwest"]
+plugin = ["engine", "dep:tauri"]
 cli = ["dep:clap"]
 
 [[bin]]
@@ -58,12 +57,12 @@ required-features = ["cli"]
 [[example]]
 name = "benchmark_update"
 path = "examples/benchmark_update.rs"
-required-features = ["plugin", "cli"]
+required-features = ["http", "cli"]
 
 [[example]]
 name = "updater_client"
-path = "examples/updater_client.rs"
-required-features = ["plugin", "cli"]
+path = "examples/updater_client/main.rs"
+required-features = ["http", "cli"]
 
 [dependencies]
 aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }

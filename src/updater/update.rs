@@ -1,23 +1,26 @@
+use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
-use reqwest::header::HeaderMap;
+#[cfg(feature = "http")]
+use http::HeaderMap;
+#[cfg(feature = "plugin")]
 use tauri::Resource;
 use url::Url;
 
 use crate::cache::PackageCache;
 use crate::config::Config;
-use crate::downloader::{
-    DifferentialDownloader, DownloadRequest, DownloadedPackage, TransferOptions,
-};
+use crate::downloader::{DifferentialDownloader, ProviderDownloadRequest};
 use crate::installer::{InstallContext, PlatformInstaller};
 use crate::listener::{DownloadListener, DownloadSummary};
-use crate::updater::build_http_client;
+use crate::provider::{ArtifactId, TransferOverrides, UpdateProvider};
+use crate::session::DownloadedPackage;
 use crate::verifier::VerifyExpectation;
 use crate::{Error, Result};
 
 /// Discovered update ready to be downloaded (differentially via blockmap) and installed.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Update {
     /// Currently running application version.
     pub current_version: String,
@@ -27,40 +30,85 @@ pub struct Update {
     pub date: Option<String>,
     /// Optional release notes text.
     pub body: Option<String>,
-    /// Raw manifest JSON payload.
+    /// Raw manifest/release metadata JSON payload.
     pub raw_json: serde_json::Value,
-    /// Target artifact download URL.
-    pub download_url: Url,
-    /// Resolved `.blockmap` URL.
-    pub blockmap_url: Url,
+    /// Opaque target artifact identifier resolved by the active [`UpdateProvider`].
+    pub artifact: ArtifactId,
+    /// Optional opaque `.blockmap` identifier resolved by the active [`UpdateProvider`].
+    pub blockmap: Option<ArtifactId>,
     /// Optional base64 SHA-512 checksum.
     pub sha512: Option<String>,
     /// Optional base64 minisign signature.
     pub signature: Option<String>,
     /// Optional manifest-reported artifact size.
     pub size: Option<u64>,
+    pub(crate) provider: Arc<dyn UpdateProvider>,
     pub(crate) app_name: String,
     pub(crate) extract_path: PathBuf,
     pub(crate) cache: PackageCache,
-    pub(crate) headers: HeaderMap,
-    pub(crate) timeout: Option<Duration>,
-    pub(crate) proxy: Option<Url>,
+    pub(crate) overrides: TransferOverrides,
     pub(crate) config: Config,
     pub(crate) restart_after_install: bool,
 }
 
+impl fmt::Debug for Update {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Update")
+            .field("current_version", &self.current_version)
+            .field("version", &self.version)
+            .field("date", &self.date)
+            .field("artifact", &self.artifact)
+            .field("blockmap", &self.blockmap)
+            .field("size", &self.size)
+            .field("provider", &self.provider)
+            .finish()
+    }
+}
+
+#[cfg(feature = "plugin")]
 impl Resource for Update {}
 
 impl Update {
-    /// Overrides request headers used during blockmap and range downloads.
+    /// Returns the opaque artifact identifier for this release.
+    pub fn artifact_id(&self) -> &ArtifactId {
+        &self.artifact
+    }
+
+    /// Returns the opaque `.blockmap` identifier, if announced by the provider.
+    pub fn blockmap_id(&self) -> Option<&ArtifactId> {
+        self.blockmap.as_ref()
+    }
+
+    /// Parses `artifact` as a [`Url`] when backed by a URL-addressed provider (e.g. HTTP).
+    pub fn download_url(&self) -> Option<Url> {
+        Url::parse(self.artifact.as_str()).ok()
+    }
+
+    /// Replaces transport metadata (mapped to HTTP headers or gRPC metadata).
+    pub fn with_metadata(mut self, metadata: Vec<(String, String)>) -> Self {
+        self.overrides.metadata = metadata;
+        self
+    }
+
+    /// Appends a single transport metadata key-value entry.
+    pub fn with_metadata_entry(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.overrides.push_metadata(key, value);
+        self
+    }
+
+    /// Overrides HTTP request headers used during blockmap and range downloads.
+    #[cfg(feature = "http")]
     pub fn with_headers(mut self, headers: HeaderMap) -> Self {
-        self.headers = headers;
+        self.overrides.metadata = headers
+            .iter()
+            .filter_map(|(k, v)| Some((k.as_str().to_string(), v.to_str().ok()?.to_string())))
+            .collect();
         self
     }
 
     /// Overrides request timeout for download transfers.
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
-        self.timeout = Some(timeout);
+        self.overrides.timeout = Some(timeout);
         self
     }
 
@@ -72,21 +120,12 @@ impl Update {
 
     /// Downloads (using blockmap delta when possible), verifies, and caches the package on disk.
     pub async fn download<L: DownloadListener>(&self, listener: &L) -> Result<DownloadedPackage> {
-        let client = build_http_client(self.timeout, self.proxy.as_ref())?;
-        let downloader = DifferentialDownloader::new(
-            client,
-            self.headers.clone(),
-            self.cache.clone(),
-            TransferOptions {
-                max_ranges_per_request: self.config.max_ranges_per_request,
-                use_multiple_range_request: self.config.use_multiple_range_request,
-                max_concurrent_ranges: self.config.max_concurrent_ranges,
-            },
-        );
-        let request = DownloadRequest {
+        let downloader =
+            DifferentialDownloader::with_provider(Arc::clone(&self.provider), self.cache.clone());
+        let request = ProviderDownloadRequest {
             version: self.version.clone(),
-            artifact_url: self.download_url.clone(),
-            blockmap_url: self.blockmap_url.clone(),
+            artifact: self.artifact.clone(),
+            blockmap: self.blockmap.clone(),
             expected_size: self.size,
             verification: VerifyExpectation {
                 sha512: self.sha512.clone(),
@@ -97,8 +136,10 @@ impl Update {
             },
             differential: self.config.differential,
             full_download_threshold: self.config.full_download_threshold,
+            max_range_gap: self.config.max_range_gap,
+            overrides: self.overrides.clone(),
         };
-        downloader.download(&request, listener).await
+        downloader.download_with_provider(&request, listener).await
     }
 
     /// Installs a previously downloaded and verified package file in place.

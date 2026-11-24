@@ -52,3 +52,12 @@ Feature: Cryptographic verification anti-replay and fail-closed update security
     Then the update succeeds in "full" mode to version "0.2.0"
     And the fallback reason contains "exceeds 64 MiB"
     And the installed AppImage matches artifact "0.2.0" with mode "0750"
+
+  Scenario: Signature omitting version comment is rejected with MissingSignedVersion when requireSignedVersion is enabled
+    Given Nginx server "primary" publishes signed artifact "0.2.0" without a version comment
+    And the updater trusts the minisign authority with requireSignedVersion "true"
+    And the updater endpoints are "nginx:primary/latest.json"
+    When the application executes "download_and_install"
+    Then the update fails with error kind "MissingSignedVersion"
+    And the cached base package still matches artifact "0.1.0"
+    And the installed AppImage matches artifact "0.1.0" with mode "0750"

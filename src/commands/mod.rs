@@ -1,7 +1,9 @@
 use std::path::PathBuf;
+#[cfg(feature = "http")]
 use std::str::FromStr;
 use std::time::Duration;
 
+#[cfg(feature = "http")]
 use http::{HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
@@ -16,7 +18,7 @@ use crate::{Error, Result, UpdaterPlusExt};
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CheckOptions {
-    /// Additional HTTP headers sent with manifest requests.
+    /// Additional request metadata/headers sent with manifest requests.
     pub headers: Option<Vec<(String, String)>>,
     /// Request timeout in milliseconds.
     pub timeout: Option<u64>,
@@ -30,7 +32,7 @@ pub struct CheckOptions {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DownloadOptions {
-    /// Additional HTTP headers sent with blockmap and range requests.
+    /// Additional request metadata/headers sent with blockmap and range requests.
     pub headers: Option<Vec<(String, String)>>,
     /// Request timeout in milliseconds.
     pub timeout: Option<u64>,
@@ -91,7 +93,14 @@ pub(crate) async fn check<R: Runtime>(
     if let Some(opts) = options {
         if let Some(headers) = opts.headers {
             for (key, value) in headers {
-                builder = builder.header(&key, &value)?;
+                #[cfg(feature = "http")]
+                {
+                    builder = builder.header(&key, &value)?;
+                }
+                #[cfg(not(feature = "http"))]
+                {
+                    builder = builder.metadata(key, value);
+                }
             }
         }
         if let Some(timeout_ms) = opts.timeout {
@@ -124,17 +133,27 @@ pub(crate) async fn check<R: Runtime>(
 impl DownloadOptions {
     fn apply_to(self, mut update: Update) -> Result<(Update, Option<bool>)> {
         if let Some(headers) = self.headers {
-            let mut map = update.headers.clone();
             for (key, value) in headers {
-                let name = HeaderName::from_str(&key).map_err(|error| {
-                    Error::InvalidHeader(format!("invalid header name '{key}': {error}"))
-                })?;
-                let val = HeaderValue::from_str(&value).map_err(|error| {
-                    Error::InvalidHeader(format!("invalid header value for '{key}': {error}"))
-                })?;
-                map.insert(name, val);
+                #[cfg(feature = "http")]
+                {
+                    let name = HeaderName::from_str(&key).map_err(|error| {
+                        Error::InvalidHeader(format!("invalid header name '{key}': {error}"))
+                    })?;
+                    let val = HeaderValue::from_str(&value).map_err(|error| {
+                        Error::InvalidHeader(format!("invalid header value for '{key}': {error}"))
+                    })?;
+                    let val_str = val.to_str().map_err(|error| {
+                        Error::InvalidHeader(format!(
+                            "header value for '{key}' is not UTF-8: {error}"
+                        ))
+                    })?;
+                    update = update.with_metadata_entry(name.as_str(), val_str);
+                }
+                #[cfg(not(feature = "http"))]
+                {
+                    update = update.with_metadata_entry(key, value);
+                }
             }
-            update = update.with_headers(map);
         }
         if let Some(timeout_ms) = self.timeout {
             update = update.with_timeout(Duration::from_millis(timeout_ms));

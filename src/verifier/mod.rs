@@ -32,6 +32,147 @@ pub struct VerifyExpectation {
     pub require_signed_version: bool,
 }
 
+/// Fail-closed verification policy required by transport-agnostic staging sessions.
+///
+/// Unlike [`VerifyExpectation`], [`VerifyPolicy`] does not implement [`Default`] and makes it
+/// impossible to accidentally commit an unverified artifact to [`crate::PackageCache`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VerifyPolicy {
+    /// Verify full-file SHA-512 checksum only.
+    Sha512 {
+        /// Base64-encoded SHA-512 digest.
+        expected: String,
+    },
+    /// Verify streaming minisign signature and optional signed version comment.
+    Minisign {
+        /// Base64-encoded minisign public key.
+        pubkey: String,
+        /// Base64-encoded minisign signature.
+        signature: String,
+        /// Version announced by the release metadata.
+        announced_version: String,
+        /// Reject signatures missing a matching `version:` trusted comment.
+        require_signed_version: bool,
+    },
+    /// Verify both SHA-512 checksum and streaming minisign signature.
+    Both {
+        /// Base64-encoded SHA-512 digest.
+        sha512: String,
+        /// Base64-encoded minisign public key.
+        pubkey: String,
+        /// Base64-encoded minisign signature.
+        signature: String,
+        /// Version announced by the release metadata.
+        announced_version: String,
+        /// Reject signatures missing a matching `version:` trusted comment.
+        require_signed_version: bool,
+    },
+}
+
+impl VerifyPolicy {
+    /// Constructs a fail-closed [`VerifyPolicy`] from a [`VerifyExpectation`].
+    pub fn from_expectation(expectation: &VerifyExpectation) -> Result<Self> {
+        let sha512 = expectation
+            .sha512
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string);
+        let pubkey = expectation
+            .pubkey
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string);
+
+        match (sha512, pubkey) {
+            (Some(sha512), Some(pubkey)) => {
+                let signature = expectation
+                    .signature
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(ToString::to_string)
+                    .ok_or_else(|| {
+                        Error::Signature("missing signature for configured pubkey".into())
+                    })?;
+                Ok(Self::Both {
+                    sha512,
+                    pubkey,
+                    signature,
+                    announced_version: expectation.announced_version.clone(),
+                    require_signed_version: expectation.require_signed_version,
+                })
+            }
+            (Some(expected), None) => Ok(Self::Sha512 { expected }),
+            (None, Some(pubkey)) => {
+                let signature = expectation
+                    .signature
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(ToString::to_string)
+                    .ok_or_else(|| {
+                        Error::Signature("missing signature for configured pubkey".into())
+                    })?;
+                Ok(Self::Minisign {
+                    pubkey,
+                    signature,
+                    announced_version: expectation.announced_version.clone(),
+                    require_signed_version: expectation.require_signed_version,
+                })
+            }
+            (None, None) => Err(Error::InvalidConfig(
+                "verification policy requires non-empty sha512 or minisign pubkey".into(),
+            )),
+        }
+    }
+
+    /// Converts this fail-closed policy into a [`VerifyExpectation`] for [`ArtifactVerifier`].
+    pub fn to_expectation(&self) -> VerifyExpectation {
+        match self {
+            Self::Sha512 { expected } => VerifyExpectation {
+                sha512: Some(expected.clone()),
+                ..Default::default()
+            },
+            Self::Minisign {
+                pubkey,
+                signature,
+                announced_version,
+                require_signed_version,
+            } => VerifyExpectation {
+                sha512: None,
+                signature: Some(signature.clone()),
+                pubkey: Some(pubkey.clone()),
+                announced_version: announced_version.clone(),
+                require_signed_version: *require_signed_version,
+            },
+            Self::Both {
+                sha512,
+                pubkey,
+                signature,
+                announced_version,
+                require_signed_version,
+            } => VerifyExpectation {
+                sha512: Some(sha512.clone()),
+                signature: Some(signature.clone()),
+                pubkey: Some(pubkey.clone()),
+                announced_version: announced_version.clone(),
+                require_signed_version: *require_signed_version,
+            },
+        }
+    }
+
+    /// Returns the expected SHA-512 digest when configured.
+    pub fn sha512(&self) -> Option<&str> {
+        match self {
+            Self::Sha512 { expected } => Some(expected.as_str()),
+            Self::Both { sha512, .. } => Some(sha512.as_str()),
+            Self::Minisign { .. } => None,
+        }
+    }
+}
+
 /// Verifies reconstructed update artifacts via SHA-512 and optional minisign signatures.
 pub struct ArtifactVerifier;
 

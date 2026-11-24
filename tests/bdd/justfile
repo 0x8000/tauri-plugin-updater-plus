@@ -42,6 +42,6 @@ test-unit:
     python -m unittest discover -s tests -v
 
 lint:
-    python -m ruff check features scripts src/updater_plus_bdd tests docker/cdn-gateway
-    python -m ruff format --check features scripts src/updater_plus_bdd tests docker/cdn-gateway
+    python -m ruff check features scripts src/updater_plus_bdd tests docker/cdn-gateway docker/mqtt-broker
+    python -m ruff format --check features scripts src/updater_plus_bdd tests docker/cdn-gateway docker/mqtt-broker
     just test-unit

@@ -1,10 +1,59 @@
 use std::collections::HashMap;
 
-use crate::Result;
 use crate::blockmap::BlockMap;
+use crate::{Error, Result};
 
 #[cfg(test)]
 mod tests;
+
+/// Inclusive byte range `[start..=end]` requested during a differential update transfer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ByteRange {
+    /// Inclusive starting byte offset.
+    pub start: u64,
+    /// Inclusive ending byte offset.
+    pub end: u64,
+}
+
+impl ByteRange {
+    /// Constructs a validated inclusive byte range `[start..=end]`.
+    pub fn new(start: u64, end: u64) -> Result<Self> {
+        if end < start {
+            return Err(Error::DifferentialTransfer(format!(
+                "byte range end {end} precedes start {start}"
+            )));
+        }
+        Ok(Self { start, end })
+    }
+
+    /// Constructs an inclusive byte range from an `offset` and positive byte `length`.
+    pub fn from_offset_len(offset: u64, length: u64) -> Result<Self> {
+        if length == 0 {
+            return Err(Error::DifferentialTransfer(
+                "byte range length must be positive".into(),
+            ));
+        }
+        let end = offset
+            .checked_add(length - 1)
+            .ok_or_else(|| Error::DifferentialTransfer("byte range end overflow".into()))?;
+        Ok(Self { start: offset, end })
+    }
+
+    /// Returns the number of bytes covered by this inclusive range.
+    pub fn len(self) -> u64 {
+        self.end - self.start + 1
+    }
+
+    /// Always returns `false` because [`ByteRange`] invariants enforce non-empty ranges.
+    pub fn is_empty(self) -> bool {
+        false
+    }
+
+    /// Returns the exclusive end offset `end + 1`, or `None` on `u64` overflow.
+    pub fn end_exclusive(self) -> Option<u64> {
+        self.end.checked_add(1)
+    }
+}
 
 /// Single contiguous operation required to reconstruct a target artifact.
 #[derive(Debug, Clone, PartialEq, Eq)]

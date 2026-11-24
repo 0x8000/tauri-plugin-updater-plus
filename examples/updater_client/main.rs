@@ -1,17 +1,19 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use aws_lc_rs::signature::{Ed25519KeyPair, KeyPair};
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
 use clap::{Parser, Subcommand};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use tauri_plugin_updater_plus::{
     Config, DownloadEvent, DownloadListener, DownloadSummary, Error, PackageCache, ReleaseManifest,
-    UpdaterBuilder,
+    Result, UpdaterBuilder,
 };
 use url::Url;
+
+mod crypto;
+mod mqtt;
+mod mqtt_wire;
+mod providers;
 
 #[derive(Parser)]
 #[command(
@@ -64,65 +66,73 @@ enum Commands {
     },
 }
 
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProviderSpec {
+    #[serde(default = "default_provider_kind")]
+    pub(crate) kind: String,
+    pub(crate) broker_addr: Option<String>,
+    pub(crate) owner: Option<String>,
+    pub(crate) repo: Option<String>,
+    pub(crate) token: Option<String>,
+    pub(crate) api_base_url: Option<Url>,
+    pub(crate) manifest_name: Option<String>,
+    pub(crate) region: Option<String>,
+    pub(crate) access_key_id: Option<String>,
+    pub(crate) secret_access_key: Option<String>,
+    pub(crate) session_token: Option<String>,
+    pub(crate) api_key: Option<String>,
+    pub(crate) max_retries: Option<usize>,
+}
+
+fn default_provider_kind() -> String {
+    "static_http".into()
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct RunSpec {
-    action: String,
-    app_name: String,
-    current_version: Version,
-    extract_path: PathBuf,
-    cache_dir: PathBuf,
+pub(crate) struct RunSpec {
+    pub(crate) action: String,
+    pub(crate) app_name: String,
+    pub(crate) current_version: Version,
+    pub(crate) extract_path: PathBuf,
+    pub(crate) cache_dir: PathBuf,
     #[serde(default)]
-    appimage_fallback: Option<PathBuf>,
+    pub(crate) appimage_fallback: Option<PathBuf>,
     #[serde(default)]
-    target: Option<String>,
+    pub(crate) target: Option<String>,
     #[serde(default)]
-    headers: Vec<(String, String)>,
-    config: Config,
+    pub(crate) headers: Vec<(String, String)>,
+    #[serde(default)]
+    pub(crate) provider: ProviderSpec,
+    pub(crate) config: Config,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct RunReport {
-    status: &'static str,
-    update_available: bool,
-    version: Option<String>,
-    notes: Option<String>,
-    summary: Option<DownloadSummary>,
-    events_count: usize,
-    started_differential: Option<bool>,
-    progress_bytes_total: usize,
-    has_finished_event: bool,
-    cached_version: Option<String>,
-    cached_size: Option<u64>,
+pub(crate) struct RunReport {
+    pub(crate) status: &'static str,
+    pub(crate) update_available: bool,
+    pub(crate) version: Option<String>,
+    pub(crate) notes: Option<String>,
+    pub(crate) summary: Option<DownloadSummary>,
+    pub(crate) events_count: usize,
+    pub(crate) started_differential: Option<bool>,
+    pub(crate) progress_bytes_total: usize,
+    pub(crate) has_finished_event: bool,
+    pub(crate) cached_version: Option<String>,
+    pub(crate) cached_size: Option<u64>,
 }
 
 #[derive(Default)]
-struct RecordingListener {
-    events: Mutex<Vec<DownloadEvent>>,
+pub(crate) struct RecordingListener {
+    pub(crate) events: Mutex<Vec<DownloadEvent>>,
 }
 
 impl DownloadListener for RecordingListener {
     fn on_event(&self, event: DownloadEvent) {
         self.events.lock().expect("Mutex poisoned").push(event);
     }
-}
-
-fn decode_hex(hex: &str, expected_len: usize) -> std::result::Result<Vec<u8>, String> {
-    let trimmed = hex.trim();
-    if trimmed.len() != expected_len * 2 {
-        return Err(format!(
-            "expected {} hex chars, got {}",
-            expected_len * 2,
-            trimmed.len()
-        ));
-    }
-    (0..expected_len)
-        .map(|idx| {
-            u8::from_str_radix(&trimmed[idx * 2..idx * 2 + 2], 16)
-                .map_err(|err| format!("invalid hex byte at {idx}: {err}"))
-        })
-        .collect()
 }
 
 fn error_kind(error: &Error) -> &'static str {
@@ -132,10 +142,12 @@ fn error_kind(error: &Error) -> &'static str {
         Error::InvalidHeader(_) => "InvalidHeader",
         Error::Http(_) => "Http",
         Error::HttpStatus { .. } => "HttpStatus",
+        Error::Transport(_) => "Transport",
         Error::InvalidManifest(_) => "InvalidManifest",
         Error::TargetNotFound(_) => "TargetNotFound",
         Error::InvalidBlockMap(_) => "InvalidBlockMap",
         Error::DifferentialTransfer(_) => "DifferentialTransfer",
+        Error::IncompleteTransfer { .. } => "IncompleteTransfer",
         Error::ChecksumMismatch { .. } => "ChecksumMismatch",
         Error::Signature(_) => "Signature",
         Error::SignedVersionMismatch { .. } => "SignedVersionMismatch",
@@ -147,15 +159,24 @@ fn error_kind(error: &Error) -> &'static str {
         Error::Json(_) => "Json",
         Error::Zip(_) => "Zip",
         Error::Semver(_) => "Semver",
+        #[cfg(feature = "plugin")]
         Error::Tauri(_) => "Tauri",
     }
 }
 
-async fn execute_run(spec_path: PathBuf) -> tauri_plugin_updater_plus::Result<RunReport> {
+async fn execute_run(spec_path: PathBuf) -> Result<RunReport> {
     let raw = std::fs::read_to_string(&spec_path)?;
     let spec: RunSpec = serde_json::from_str(&raw)?;
-    let cache = PackageCache::with_appimage_fallback(spec.cache_dir, spec.appimage_fallback);
+    let cache = PackageCache::with_appimage_fallback(
+        spec.cache_dir.clone(),
+        spec.appimage_fallback.clone(),
+    );
 
+    if spec.provider.kind == "mqtt_push" {
+        return mqtt::execute_mqtt_push(spec, cache).await;
+    }
+
+    let custom_provider = providers::build_custom_provider(&spec)?;
     let mut builder = UpdaterBuilder::new(
         spec.app_name,
         spec.current_version,
@@ -164,6 +185,9 @@ async fn execute_run(spec_path: PathBuf) -> tauri_plugin_updater_plus::Result<Ru
     )
     .config(spec.config);
 
+    if let Some(provider) = custom_provider {
+        builder = builder.provider(provider);
+    }
     if let Some(target) = spec.target {
         builder = builder.target(target);
     }
@@ -243,54 +267,12 @@ async fn execute_run(spec_path: PathBuf) -> tauri_plugin_updater_plus::Result<Ru
 async fn main() {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Keygen { seed_hex } => {
-            let seed = decode_hex(&seed_hex, 32).expect("valid 32-byte seed hex");
-            let key_pair = Ed25519KeyPair::from_seed_unchecked(&seed).expect("ed25519 keypair");
-            let key_id = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
-            let mut pub_bin = Vec::with_capacity(42);
-            pub_bin.extend_from_slice(b"Ed");
-            pub_bin.extend_from_slice(&key_id);
-            pub_bin.extend_from_slice(key_pair.public_key().as_ref());
-            let pubkey_text = format!(
-                "untrusted comment: minisign public key\n{}",
-                STANDARD.encode(&pub_bin)
-            );
-            println!(
-                "{}",
-                serde_json::json!({ "pubkey": STANDARD.encode(pubkey_text) })
-            );
-        }
+        Commands::Keygen { seed_hex } => crypto::run_keygen(&seed_hex),
         Commands::Sign {
             seed_hex,
             blake2b_hex,
             trusted_comment,
-        } => {
-            let seed = decode_hex(&seed_hex, 32).expect("valid 32-byte seed hex");
-            let digest = decode_hex(&blake2b_hex, 64).expect("valid 64-byte blake2b hex");
-            let key_pair = Ed25519KeyPair::from_seed_unchecked(&seed).expect("ed25519 keypair");
-            let key_id = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
-
-            let sig_bytes = key_pair.sign(&digest);
-            let mut sig_bin = Vec::with_capacity(74);
-            sig_bin.extend_from_slice(b"ED");
-            sig_bin.extend_from_slice(&key_id);
-            sig_bin.extend_from_slice(sig_bytes.as_ref());
-
-            let mut global_msg = Vec::with_capacity(64 + trusted_comment.len());
-            global_msg.extend_from_slice(sig_bytes.as_ref());
-            global_msg.extend_from_slice(trusted_comment.as_bytes());
-            let global_sig = key_pair.sign(&global_msg);
-
-            let sig_text = format!(
-                "untrusted comment: minisign signature\n{}\ntrusted comment: {trusted_comment}\n{}",
-                STANDARD.encode(&sig_bin),
-                STANDARD.encode(global_sig.as_ref()),
-            );
-            println!(
-                "{}",
-                serde_json::json!({ "signature": STANDARD.encode(sig_text) })
-            );
-        }
+        } => crypto::run_sign(&seed_hex, &blake2b_hex, &trusted_comment),
         Commands::SeedCache {
             cache_dir,
             input,

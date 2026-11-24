@@ -28,9 +28,12 @@ class HarnessHelpersTest(unittest.TestCase):
         h1 = builder.compute_build_hash("nginx-release")
         h2 = builder.compute_build_hash("nginx-release")
         h3 = builder.compute_build_hash("cdn-gateway")
+        h4 = builder.compute_build_hash("mqtt-broker")
         self.assertEqual(len(h1), 24)
         self.assertEqual(h1, h2)
         self.assertNotEqual(h1, h3)
+        self.assertNotEqual(h1, h4)
+        self.assertNotEqual(h3, h4)
         with self.assertRaises(ValueError):
             builder.ensure("unknown-service")
 

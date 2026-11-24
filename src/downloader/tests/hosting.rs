@@ -8,7 +8,6 @@ use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
 use url::Url;
 
-use super::super::transfer::TransferExecutor;
 use super::super::{DifferentialDownloader, TransferOptions};
 use super::{
     MockServerState, ServerRangeMode, build_v1_and_v2, make_request, seeded_cache, spawn_server,
@@ -16,6 +15,7 @@ use super::{
 use crate::blockmap::BlockMap;
 use crate::chunker::ChunkerConfig;
 use crate::listener::{DownloadMode, DummyListener};
+use crate::provider::http::HttpDownloader;
 
 #[test]
 fn detects_known_single_range_hosts_for_github_and_object_stores() {
@@ -32,7 +32,7 @@ fn detects_known_single_range_hosts_for_github_and_object_stores() {
     ] {
         let parsed = Url::parse(url).expect("url");
         assert!(
-            TransferExecutor::is_known_single_range_host(&parsed),
+            HttpDownloader::is_known_single_range_host(&parsed),
             "expected {url} to prefer single-range"
         );
     }
@@ -44,7 +44,7 @@ fn detects_known_single_range_hosts_for_github_and_object_stores() {
     ] {
         let parsed = Url::parse(url).expect("url");
         assert!(
-            !TransferExecutor::is_known_single_range_host(&parsed),
+            !HttpDownloader::is_known_single_range_host(&parsed),
             "expected {url} to allow multi-range probing"
         );
     }

@@ -95,10 +95,14 @@ class UpdaterAppDriver:
         self.pubkey: str | None = None
         self.require_signed_version = False
         self.differential = True
+        self.allow_downgrades = False
         self.full_download_threshold = 0.85
+        self.max_ranges_per_request = 128
         self.use_multiple_range_request: bool | None = None
         self.max_concurrent_ranges = 4
+        self.max_range_gap: int | None = None
         self.headers: list[tuple[str, str]] = []
+        self.provider: dict[str, object] = {"kind": "static_http"}
         self.last_outcome: UpdaterRunOutcome | None = None
         self._spec_seq = 0
 
@@ -145,16 +149,18 @@ class UpdaterAppDriver:
             "appimageFallback": str(self.appimage_path) if self.appimage_path.is_file() else None,
             "target": "linux-x86_64",
             "headers": [[k, v] for k, v in self.headers],
+            "provider": self.provider,
             "config": {
                 "endpoints": self.endpoints,
                 "pubkey": self.pubkey,
                 "requireSignedVersion": self.require_signed_version,
                 "differential": self.differential,
-                "allowDowngrades": False,
+                "allowDowngrades": self.allow_downgrades,
                 "fullDownloadThreshold": self.full_download_threshold,
-                "maxRangesPerRequest": 128,
+                "maxRangesPerRequest": self.max_ranges_per_request,
                 "useMultipleRangeRequest": self.use_multiple_range_request,
                 "maxConcurrentRanges": self.max_concurrent_ranges,
+                "maxRangeGap": self.max_range_gap,
             },
         }
         spec_path.write_text(json.dumps(spec, indent=2), encoding="utf-8")

@@ -9,7 +9,14 @@ import requests
 from testcontainers.core.container import DockerContainer
 from testcontainers.core.network import Network
 
-from .config import CDN_ASSET_PORT, CDN_ORIGIN_PORT, NGINX_CONTAINER_PORT, image_name
+from .config import (
+    CDN_ASSET_PORT,
+    CDN_ORIGIN_PORT,
+    MQTT_ADMIN_PORT,
+    MQTT_BROKER_PORT,
+    NGINX_CONTAINER_PORT,
+    image_name,
+)
 
 
 def probe_http_ready(url: str, timeout_sec: float = 20.0) -> None:
@@ -132,6 +139,55 @@ class CdnGatewayContainer:
     @property
     def admin_base_url(self) -> str:
         return f"http://{self.ip}:{CDN_ORIGIN_PORT}/admin"
+
+    @property
+    def api_base_url(self) -> str:
+        return f"http://{self.ip}:{CDN_ORIGIN_PORT}/"
+
+    def stop(self) -> None:
+        self._container.stop()
+
+
+class MqttBrokerContainer:
+    """Real TCP MQTT v3.1.1 broker (:1883) with HTTP admin/telemetry control plane (:8082)."""
+
+    def __init__(
+        self,
+        *,
+        network: Network,
+        releases_dir: Path,
+        labels: dict[str, str],
+        alias: str = "mqtt-broker",
+    ) -> None:
+        self._network = network
+        self.releases_dir = releases_dir
+        self.releases_dir.mkdir(parents=True, exist_ok=True)
+        self._container = (
+            DockerContainer(image_name("mqtt-broker"))
+            .with_network(network)
+            .with_network_aliases(alias)
+            .with_volume_mapping(str(self.releases_dir), "/srv/releases", mode="ro")
+            .with_kwargs(labels=dict(labels))
+        )
+        self.ip: str = ""
+
+    def start(self) -> MqttBrokerContainer:
+        self._container.start()
+        try:
+            self.ip = resolve_container_ip(self._container, self._network)
+            probe_http_ready(f"http://{self.ip}:{MQTT_ADMIN_PORT}/healthz")
+        except BaseException:
+            self._container.stop()
+            raise
+        return self
+
+    @property
+    def broker_addr(self) -> str:
+        return f"{self.ip}:{MQTT_BROKER_PORT}"
+
+    @property
+    def admin_base_url(self) -> str:
+        return f"http://{self.ip}:{MQTT_ADMIN_PORT}/admin"
 
     def stop(self) -> None:
         self._container.stop()
