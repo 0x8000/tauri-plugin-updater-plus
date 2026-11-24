@@ -5,7 +5,6 @@ use reqwest::header::HeaderMap;
 use tauri::Resource;
 use url::Url;
 
-use crate::Result;
 use crate::cache::PackageCache;
 use crate::config::Config;
 use crate::downloader::{
@@ -13,7 +12,9 @@ use crate::downloader::{
 };
 use crate::installer::{InstallContext, PlatformInstaller};
 use crate::listener::{DownloadListener, DownloadSummary};
+use crate::updater::build_http_client;
 use crate::verifier::VerifyExpectation;
+use crate::{Error, Result};
 
 /// Discovered update ready to be downloaded (differentially via blockmap) and installed.
 #[derive(Debug, Clone)]
@@ -71,7 +72,7 @@ impl Update {
 
     /// Downloads (using blockmap delta when possible), verifies, and caches the package on disk.
     pub async fn download<L: DownloadListener>(&self, listener: &L) -> Result<DownloadedPackage> {
-        let client = self.build_client()?;
+        let client = build_http_client(self.timeout, self.proxy.as_ref())?;
         let downloader = DifferentialDownloader::new(
             client,
             self.headers.clone(),
@@ -118,22 +119,11 @@ impl Update {
         listener: &L,
     ) -> Result<DownloadSummary> {
         let downloaded = self.download(listener).await?;
-        self.install_file(&downloaded.path)?;
+        let update = self.clone();
+        let pkg_path = downloaded.path;
+        tokio::task::spawn_blocking(move || update.install_file(&pkg_path))
+            .await
+            .map_err(|err| Error::Io(std::io::Error::other(err.to_string())))??;
         Ok(downloaded.summary)
-    }
-
-    fn build_client(&self) -> Result<reqwest::Client> {
-        let mut builder = reqwest::Client::builder().user_agent(concat!(
-            env!("CARGO_PKG_NAME"),
-            "/",
-            env!("CARGO_PKG_VERSION")
-        ));
-        if let Some(timeout) = self.timeout {
-            builder = builder.timeout(timeout);
-        }
-        if let Some(proxy_url) = &self.proxy {
-            builder = builder.proxy(reqwest::Proxy::all(proxy_url.as_str())?);
-        }
-        Ok(builder.build()?)
     }
 }

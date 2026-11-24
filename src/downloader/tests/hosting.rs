@@ -84,7 +84,23 @@ async fn degrades_s3_style_200_on_multi_range_into_single_range_differential_dow
 
 #[tokio::test]
 async fn explicit_disable_multi_range_skips_multipart_probe() {
-    let (v1, v2) = build_v1_and_v2();
+    let mut rng = 0x99aa_bbccu64;
+    let mut v1 = Vec::with_capacity(2_200_000);
+    for _ in 0..2_200_000 {
+        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+        v1.push((rng >> 56) as u8);
+    }
+    let mut v2 = v1.clone();
+    for offset in [
+        60_000usize,
+        400_000,
+        740_000,
+        1_080_000,
+        1_420_000,
+        1_760_000,
+    ] {
+        v2[offset..offset + 2048].fill((offset / 10_000) as u8);
+    }
     let v2_artifact =
         BlockMap::generate(v2.as_slice(), "file", ChunkerConfig::default()).expect("v2 map");
     let state = MockServerState::new(
@@ -114,7 +130,7 @@ async fn explicit_disable_multi_range_skips_multipart_probe() {
         .expect("forced single-range differential");
     assert_eq!(result.summary.mode, DownloadMode::Differential);
     let seen = state.received_ranges.lock().expect("lock");
-    assert!(seen.len() >= 2);
+    assert!(seen.len() >= 6);
     assert!(
         seen.iter().flatten().all(|hdr| !hdr.contains(',')),
         "no multi-range header should be sent when disabled: {seen:?}"
@@ -135,9 +151,9 @@ async fn serve_cdn_asset(
     AxumPath(token): AxumPath<String>,
     headers: HeaderMap,
 ) -> Response {
-    if headers.contains_key(header::AUTHORIZATION) {
+    if headers.contains_key(header::AUTHORIZATION) || headers.contains_key(header::COOKIE) {
         state.leaked_auth_headers.fetch_add(1, Ordering::SeqCst);
-        return (StatusCode::BAD_REQUEST, "foreign auth header rejected").into_response();
+        return (StatusCode::BAD_REQUEST, "foreign auth/cookie rejected").into_response();
     }
     if token == "signed-v1" {
         let hit = state.v1_hits.fetch_add(1, Ordering::SeqCst);
@@ -268,6 +284,10 @@ async fn reuses_github_redirect_url_recovers_on_expiry_and_strips_cross_origin_a
     auth_headers.insert(
         header::AUTHORIZATION,
         HeaderValue::from_static("Bearer gh-secret"),
+    );
+    auth_headers.insert(
+        header::COOKIE,
+        HeaderValue::from_static("gh_session=secret-cookie"),
     );
 
     let downloader = DifferentialDownloader::new(

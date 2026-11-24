@@ -154,8 +154,66 @@ fn rejects_corrupt_or_unsupported_blockmaps_with_typed_errors() {
         Err(Error::InvalidBlockMap(ref msg)) if msg.contains("overflow")
     ));
 
+    let overlapping = BlockMap {
+        version: "2".into(),
+        files: vec![
+            BlockMapFile {
+                name: "first".into(),
+                offset: 0,
+                checksums: vec!["abc".into()],
+                sizes: vec![20],
+            },
+            BlockMapFile {
+                name: "second".into(),
+                offset: 10,
+                checksums: vec!["def".into()],
+                sizes: vec![10],
+            },
+        ],
+    };
+    assert!(matches!(
+        overlapping.validate(),
+        Err(Error::InvalidBlockMap(ref msg)) if msg.contains("overlaps")
+    ));
+
     assert!(matches!(
         BlockMap::from_bytes(b"\x1f\x8bnot-valid-gzip"),
-        Err(Error::Json(_))
+        Err(Error::Json(ref err)) if err.is_io()
     ));
+    assert!(matches!(
+        BlockMap::from_bytes(b"{not-valid-json"),
+        Err(Error::Json(ref err)) if err.is_syntax() || err.is_eof()
+    ));
+    assert!(matches!(
+        bad_version.to_gzip_bytes(),
+        Err(Error::InvalidBlockMap(ref msg)) if msg.contains("unsupported blockmap version")
+    ));
+    assert!(matches!(
+        BlockMap::from_bytes(br#"{"version":"1","files":[]}"#),
+        Err(Error::InvalidBlockMap(ref msg)) if msg.contains("unsupported blockmap version")
+    ));
+
+    // Gzip decompression bomb (> 64 MiB uncompressed) must be aborted safely.
+    {
+        use std::io::Write;
+        let mut bomb = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+        bomb.write_all(b"{\"version\":\"2\",\"pad\":\"")
+            .expect("prefix");
+        let chunk = vec![b'a'; 1024 * 1024];
+        for _ in 0..65 {
+            bomb.write_all(&chunk).expect("bomb chunk");
+        }
+        let bomb_bytes = bomb.finish().expect("finish bomb");
+        assert!(bomb_bytes.len() < 256 * 1024);
+        assert!(matches!(
+            BlockMap::from_bytes(&bomb_bytes),
+            Err(Error::InvalidBlockMap(ref msg)) if msg.contains("exceeds 64 MiB")
+        ));
+    }
+
+    let empty_artifact =
+        BlockMap::generate(&[][..], "file", ChunkerConfig::default()).expect("empty generate");
+    assert_eq!(empty_artifact.size, 0);
+    assert_eq!(empty_artifact.blockmap.total_size(), 0);
+    assert_eq!(empty_artifact.blockmap.block_count(), 0);
 }

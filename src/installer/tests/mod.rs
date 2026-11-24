@@ -315,4 +315,12 @@ fn extracts_appimage_from_zip_handles_corrupt_zip_missing_target_and_skips_dirs(
         missing_err,
         Error::Io(ref io_err) if io_err.kind() == std::io::ErrorKind::NotFound
     ));
+
+    // Directory target (non-AppImage Linux install layout) must return UnsupportedPlatform cleanly.
+    let dir_target = dir.path().join("install-dir");
+    std::fs::create_dir(&dir_target).expect("mkdir");
+    assert!(matches!(
+        LinuxInstaller::install_appimage(&zip_path, &zip_header[..64], &dir_target),
+        Err(Error::UnsupportedPlatform)
+    ));
 }

@@ -9,19 +9,19 @@ use axum::routing::get;
 use semver::Version;
 use url::Url;
 
-use super::{TargetResolver, UpdaterBuilder};
-use crate::Error;
+use super::UpdaterBuilder;
 use crate::blockmap::BlockMap;
 use crate::cache::PackageCache;
 use crate::chunker::ChunkerConfig;
-use crate::config::Config;
 use crate::listener::{DownloadEvent, DownloadListener, DownloadMode};
 
+mod failover;
+
 #[derive(Clone, Default)]
-struct ReleaseServerState {
-    files: Arc<Mutex<HashMap<String, Vec<u8>>>>,
-    status_overrides: Arc<Mutex<HashMap<String, StatusCode>>>,
-    seen_custom_header: Arc<Mutex<Option<String>>>,
+pub(super) struct ReleaseServerState {
+    pub(super) files: Arc<Mutex<HashMap<String, Vec<u8>>>>,
+    pub(super) status_overrides: Arc<Mutex<HashMap<String, StatusCode>>>,
+    pub(super) seen_custom_header: Arc<Mutex<Option<String>>>,
 }
 
 async fn serve_file(
@@ -123,7 +123,7 @@ fn synthetic_bytes(seed: u64, size: usize) -> Vec<u8> {
     buf
 }
 
-async fn spawn_release_server(state: ReleaseServerState) -> Url {
+pub(super) async fn spawn_release_server(state: ReleaseServerState) -> Url {
     let app = Router::new()
         .route("/{name}", get(serve_file))
         .with_state(state);
@@ -275,121 +275,4 @@ async fn chains_first_full_download_into_subsequent_differential_update_with_ele
             Some(DownloadEvent::Finished { summary }) if summary == &pkg_v3.summary
         ));
     }
-}
-
-#[tokio::test]
-async fn handles_version_comparisons_204_failover_and_builder_validation() {
-    let temp = tempfile::tempdir().expect("temp dir");
-    let cache = PackageCache::with_appimage_fallback(temp.path().join("cache"), None);
-
-    assert!(matches!(
-        UpdaterBuilder::new(
-            "myapp".into(),
-            Version::new(1, 0, 0),
-            temp.path().join("app"),
-            cache.clone(),
-        )
-        .build(),
-        Err(Error::InvalidConfig(_))
-    ));
-    assert!(matches!(
-        UpdaterBuilder::new(
-            "myapp".into(),
-            Version::new(1, 0, 0),
-            temp.path().join("app"),
-            cache.clone(),
-        )
-        .header("bad header name", "val"),
-        Err(Error::InvalidHeader(_))
-    ));
-
-    let state = ReleaseServerState::default();
-    let base_url = spawn_release_server(state.clone()).await;
-    {
-        state
-            .status_overrides
-            .lock()
-            .expect("lock")
-            .insert("no-update".into(), StatusCode::NO_CONTENT);
-        state
-            .status_overrides
-            .lock()
-            .expect("lock")
-            .insert("failing".into(), StatusCode::INTERNAL_SERVER_ERROR);
-        let manifest = serde_json::json!({
-            "version": "0.9.0",
-            "url": base_url.join("pkg").expect("url"),
-        });
-        state.files.lock().expect("lock").insert(
-            "v09.json".into(),
-            serde_json::to_vec(&manifest).expect("json"),
-        );
-    }
-
-    let no_content_updater = UpdaterBuilder::new(
-        "myapp".into(),
-        Version::new(1, 0, 0),
-        temp.path().join("app"),
-        cache.clone(),
-    )
-    .endpoints(vec![base_url.join("no-update").expect("url")])
-    .build()
-    .expect("updater");
-    assert!(no_content_updater.check().await.expect("204 ok").is_none());
-
-    let downgrade_blocked = UpdaterBuilder::new(
-        "myapp".into(),
-        Version::new(1, 0, 0),
-        temp.path().join("app"),
-        cache.clone(),
-    )
-    .endpoints(vec![
-        base_url.join("failing").expect("url"),
-        base_url.join("v09.json").expect("url"),
-    ])
-    .build()
-    .expect("updater");
-    assert!(
-        downgrade_blocked
-            .check()
-            .await
-            .expect("failover ok")
-            .is_none()
-    );
-
-    let mut allow_config = Config {
-        allow_downgrades: true,
-        ..Config::default()
-    };
-    allow_config.endpoints = vec![
-        base_url.join("failing").expect("url"),
-        base_url.join("v09.json").expect("url"),
-    ];
-    let downgrade_allowed = UpdaterBuilder::new(
-        "myapp".into(),
-        Version::new(1, 0, 0),
-        temp.path().join("app"),
-        cache,
-    )
-    .config(allow_config)
-    .build()
-    .expect("updater");
-    let update = downgrade_allowed
-        .check()
-        .await
-        .expect("downgrade allowed")
-        .expect("update");
-    assert_eq!(update.version, "0.9.0");
-}
-
-#[test]
-fn expands_endpoint_template_placeholders() {
-    let raw = Url::parse("https://updates.example.com/{{target}}/{{current_version}}/latest.json")
-        .expect("url");
-    let expanded =
-        TargetResolver::expand_endpoint(&raw, "linux-x86_64", "0.1.0+nightly").expect("expand");
-    assert_eq!(
-        expanded.as_str(),
-        "https://updates.example.com/linux-x86_64/0.1.0+nightly/latest.json"
-    );
 }

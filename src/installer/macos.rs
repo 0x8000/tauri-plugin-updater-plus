@@ -32,29 +32,73 @@ impl MacosInstaller {
 
         MacosCodeSignVerifier::verify_bundle_update(&context.extract_path, &extracted_app)?;
 
-        let tmp_backup = tempfile::Builder::new()
-            .prefix("updater_plus_current_app")
-            .tempdir()?;
-        let backup_dest = tmp_backup.path().join("current.app");
-
-        let move_result = std::fs::rename(&context.extract_path, &backup_dest);
-        match move_result {
-            Ok(()) => {
-                if let Err(error) = std::fs::rename(&extracted_app, &context.extract_path) {
-                    let _ = std::fs::rename(&backup_dest, &context.extract_path);
-                    return Err(error.into());
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-                Self::elevate_replace(&extracted_app, &context.extract_path)?;
-            }
+        let parent_dir = context.extract_path.parent();
+        let tmp_backup = match parent_dir
+            .map(|dir| {
+                tempfile::Builder::new()
+                    .prefix(".updater_plus_backup_")
+                    .tempdir_in(dir)
+            })
+            .transpose()
+        {
+            Ok(Some(dir)) => Some(dir),
+            Ok(None) => Some(
+                tempfile::Builder::new()
+                    .prefix("updater_plus_current_app")
+                    .tempdir()?,
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => None,
             Err(error) => return Err(error.into()),
+        };
+
+        if let Some(tmp_backup) = tmp_backup {
+            let backup_dest = tmp_backup.path().join("current.app");
+            match std::fs::rename(&context.extract_path, &backup_dest) {
+                Ok(()) => {
+                    if let Err(error) = Self::move_or_ditto(&extracted_app, &context.extract_path) {
+                        let _ = std::fs::rename(&backup_dest, &context.extract_path);
+                        return Err(error);
+                    }
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::CrossesDevices
+                    ) =>
+                {
+                    Self::elevate_replace(&extracted_app, &context.extract_path)?;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        } else {
+            Self::elevate_replace(&extracted_app, &context.extract_path)?;
         }
 
         let _ = Command::new("/usr/bin/touch")
             .arg(&context.extract_path)
             .status();
         Ok(())
+    }
+
+    fn move_or_ditto(source_app: &Path, target_app: &Path) -> Result<()> {
+        match std::fs::rename(source_app, target_app) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::CrossesDevices => {
+                let output = Command::new("/usr/bin/ditto")
+                    .arg(source_app)
+                    .arg(target_app)
+                    .output()?;
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    return Err(Error::Install(format!(
+                        "ditto cross-volume copy failed: {}",
+                        stderr.trim()
+                    )));
+                }
+                Ok(())
+            }
+            Err(err) => Err(err.into()),
+        }
     }
 
     fn extract_app_from_targz(archive_path: &Path, dest: &Path) -> Result<PathBuf> {
@@ -86,7 +130,11 @@ impl MacosInstaller {
     fn locate_app_bundle(dir: &Path) -> Result<PathBuf> {
         for entry in std::fs::read_dir(dir)? {
             let path = entry?.path();
-            if path.is_dir() && path.extension().and_then(|s| s.to_str()) == Some("app") {
+            if path.is_dir()
+                && path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("app"))
+            {
                 return Ok(path);
             }
         }
@@ -105,11 +153,12 @@ impl MacosInstaller {
             shell_cmd.replace('\\', "\\\\").replace('"', "\\\"")
         }
 
+        let backup_app = target_app.with_extension("app.updater-backup");
         let shell_cmd = format!(
-            "rm -rf {} && mv -f {} {}",
-            shell_quote(target_app),
-            shell_quote(new_app),
-            shell_quote(target_app)
+            "rm -rf {bak} && mv -f {dst} {bak} && (/usr/bin/ditto {src} {dst} && rm -rf {bak} || (rm -rf {dst}; mv -f {bak} {dst}; exit 1))",
+            dst = shell_quote(target_app),
+            src = shell_quote(new_app),
+            bak = shell_quote(&backup_app),
         );
         let script_src = format!(
             "do shell script \"{}\" with administrator privileges",

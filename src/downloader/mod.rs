@@ -1,16 +1,15 @@
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use reqwest::header::HeaderMap;
 use url::Url;
 
-use crate::Result;
 use crate::blockmap::BlockMap;
-use crate::cache::{CachedPackageState, LocalBasePackage, PackageCache};
-use crate::chunker::ChunkerConfig;
+use crate::cache::{LocalBasePackage, PackageCache};
 use crate::listener::{DownloadEvent, DownloadListener, DownloadMode, DownloadSummary};
 use crate::planner::{DownloadPlan, PlanOptions};
 use crate::verifier::{ArtifactVerifier, VerifyExpectation};
+use crate::{Error, Result};
 
 mod range_session;
 mod reconstruct;
@@ -125,7 +124,17 @@ impl DifferentialDownloader {
     }
 
     async fn prepare_plan(&self, request: &DownloadRequest) -> PlanResolution {
-        let Some(base) = self.cache.load_base() else {
+        let cache = self.cache.clone();
+        let loaded_base = match tokio::task::spawn_blocking(move || cache.load_base()).await {
+            Ok(base) => base,
+            Err(error) => {
+                return PlanResolution::Fallback {
+                    reason: format!("load cached base package panicked: {error}"),
+                    blockmap: None,
+                };
+            }
+        };
+        let Some(base) = loaded_base else {
             return PlanResolution::Fallback {
                 reason: "no cached base package available".into(),
                 blockmap: None,
@@ -205,15 +214,28 @@ impl DifferentialDownloader {
             ));
         }
 
-        let copy = match PackageReconstructor::apply_local_copies(
-            &ctx.base.package_path,
-            &mut target,
-            &ctx.blockmap,
-            &ctx.plan,
-        ) {
-            Ok(copy) => copy,
-            Err(error) => {
+        let base_path = ctx.base.package_path.clone();
+        let map_clone = ctx.blockmap.clone();
+        let plan_clone = ctx.plan.clone();
+        let (mut target, copy) = match tokio::task::spawn_blocking(move || {
+            let copy = PackageReconstructor::apply_local_copies(
+                &base_path,
+                &mut target,
+                &map_clone,
+                &plan_clone,
+            )?;
+            Ok::<_, Error>((target, copy))
+        })
+        .await
+        {
+            Ok(Ok(pair)) => pair,
+            Ok(Err(error)) => {
                 return DifferentialOutcome::fallback(format!("copy local blocks failed: {error}"));
+            }
+            Err(error) => {
+                return DifferentialOutcome::fallback(format!(
+                    "copy local blocks task panicked: {error}"
+                ));
             }
         };
 
@@ -225,7 +247,7 @@ impl DifferentialDownloader {
             reused_bytes: copy.reused_bytes,
         });
 
-        let session = RangeSession::new(&self.transfer, &request.artifact_url);
+        let session = RangeSession::new(&self.transfer, &request.artifact_url, ctx.plan.total_size);
         let fetch = match session
             .fetch_all(&copy.missing_ranges, &mut target, listener)
             .await
@@ -241,15 +263,24 @@ impl DifferentialDownloader {
         }
         drop(target);
 
-        if let Err(error) = PackageReconstructor::verify_reconstructed(
-            temp_file.path(),
-            &ctx.blockmap,
-            &request.verification,
-        ) {
-            return DifferentialOutcome::fallback(format!(
-                "reconstructed package verification failed: {error}"
-            ));
-        }
+        let verify_path = temp_file.path().to_path_buf();
+        let verify_map = ctx.blockmap.clone();
+        let verify_exp = request.verification.clone();
+        let commit_cache = self.cache.clone();
+        let commit_ver = request.version.clone();
+        let verified_result = tokio::task::spawn_blocking(move || {
+            PackageReconstructor::verify_reconstructed(&verify_path, &verify_map, &verify_exp)
+                .map_err(|err| format!("reconstructed package verification failed: {err}"))?;
+            PackageReconstructor::commit_verified_file(
+                &commit_cache,
+                &commit_ver,
+                &verify_exp,
+                &verify_path,
+                Some(&verify_map),
+            )
+            .map_err(|err| format!("cache commit failed: {err}"))
+        })
+        .await;
 
         let summary = DownloadSummary::from_counts(
             DownloadMode::Differential,
@@ -259,14 +290,17 @@ impl DifferentialDownloader {
         )
         .with_details(fetch.http_requests, None);
 
-        match self.commit_verified(request, temp_file.path(), Some(&ctx.blockmap)) {
-            Ok(path) => {
+        match verified_result {
+            Ok(Ok(path)) => {
                 listener.on_event(DownloadEvent::Finished {
                     summary: summary.clone(),
                 });
                 DifferentialOutcome::Completed(DownloadedPackage { path, summary })
             }
-            Err(error) => DifferentialOutcome::fallback(format!("cache commit failed: {error}")),
+            Ok(Err(reason)) => DifferentialOutcome::fallback(reason),
+            Err(error) => {
+                DifferentialOutcome::fallback(format!("differential verify task failed: {error}"))
+            }
         }
     }
 
@@ -288,8 +322,23 @@ impl DifferentialDownloader {
         let downloaded =
             TransferExecutor::write_full_response(ctx.response, temp_file.path(), listener).await?;
 
-        ArtifactVerifier::verify_file(temp_file.path(), &request.verification)?;
-        let path = self.commit_verified(request, temp_file.path(), ctx.remote_blockmap.as_ref())?;
+        let verify_path = temp_file.path().to_path_buf();
+        let verify_exp = request.verification.clone();
+        let known_map = ctx.remote_blockmap;
+        let commit_cache = self.cache.clone();
+        let commit_ver = request.version.clone();
+        let path = tokio::task::spawn_blocking(move || -> Result<PathBuf> {
+            ArtifactVerifier::verify_file(&verify_path, &verify_exp)?;
+            PackageReconstructor::commit_verified_file(
+                &commit_cache,
+                &commit_ver,
+                &verify_exp,
+                &verify_path,
+                known_map.as_ref(),
+            )
+        })
+        .await
+        .map_err(|err| Error::Io(std::io::Error::other(err.to_string())))??;
 
         let summary = DownloadSummary::from_counts(DownloadMode::Full, downloaded, downloaded, 0)
             .with_details(1, ctx.fallback_reason);
@@ -297,31 +346,6 @@ impl DifferentialDownloader {
             summary: summary.clone(),
         });
         Ok(DownloadedPackage { path, summary })
-    }
-
-    fn commit_verified(
-        &self,
-        request: &DownloadRequest,
-        verified_file: &Path,
-        known_blockmap: Option<&BlockMap>,
-    ) -> Result<PathBuf> {
-        let actual_size = std::fs::metadata(verified_file)?.len();
-        let (blockmap, sha512) = match known_blockmap {
-            Some(map) if map.total_size() == actual_size => {
-                (map.clone(), request.verification.sha512.clone())
-            }
-            _ => {
-                let artifact =
-                    BlockMap::generate_from_path(verified_file, ChunkerConfig::default())?;
-                (artifact.blockmap, Some(artifact.sha512))
-            }
-        };
-        let state = CachedPackageState {
-            version: request.version.clone(),
-            size: actual_size,
-            sha512,
-        };
-        self.cache.commit(verified_file, &blockmap, &state)
     }
 }
 

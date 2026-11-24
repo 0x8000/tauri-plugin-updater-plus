@@ -29,14 +29,34 @@ impl ElectronYamlParser {
         let mut release_notes: Option<String> = None;
         let mut files: Vec<YamlFileEntry> = Vec::new();
         let mut in_files = false;
+        let mut in_notes_block = false;
+        let mut notes_block_lines: Vec<String> = Vec::new();
+        let mut notes_strip_trailing = true;
 
         for line in body.lines() {
+            if in_notes_block {
+                if line.starts_with(' ') || line.starts_with('\t') || line.trim().is_empty() {
+                    notes_block_lines.push(line.to_string());
+                    continue;
+                }
+                release_notes = Some(Self::finalize_block_scalar(
+                    &notes_block_lines,
+                    notes_strip_trailing,
+                ));
+                notes_block_lines.clear();
+                in_notes_block = false;
+            }
             let trimmed = line.trim();
             if trimmed.is_empty() || trimmed.starts_with('#') {
                 continue;
             }
             if let Some((key, raw_value)) = Self::parse_top_level_kv(line) {
                 in_files = key == "files";
+                if key == "releaseNotes" && matches!(raw_value, "|" | "|-") {
+                    in_notes_block = true;
+                    notes_strip_trailing = raw_value == "|-";
+                    continue;
+                }
                 let value = Self::unquote_yaml(raw_value);
                 match key {
                     "version" => version = Some(value),
@@ -52,6 +72,12 @@ impl ElectronYamlParser {
                 Self::parse_file_item_line(line, &mut files);
             }
         }
+        if in_notes_block {
+            release_notes = Some(Self::finalize_block_scalar(
+                &notes_block_lines,
+                notes_strip_trailing,
+            ));
+        }
 
         let version_str = version.ok_or_else(|| {
             Error::InvalidManifest("electron YAML manifest missing `version`".into())
@@ -59,7 +85,13 @@ impl ElectronYamlParser {
         let parsed_version = Version::from_str(version_str.trim_start_matches('v'))?;
         let pub_date = release_date
             .as_deref()
-            .and_then(|value| OffsetDateTime::parse(value, &Rfc3339).ok());
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                OffsetDateTime::parse(value, &Rfc3339).map_err(|error| {
+                    Error::InvalidManifest(format!("invalid releaseDate: {error}"))
+                })
+            })
+            .transpose()?;
 
         let selected = files.into_iter().next().unwrap_or_default();
         let artifact_ref = selected.url.or(top_path).ok_or_else(|| {
@@ -151,9 +183,57 @@ impl ElectronYamlParser {
             return inner.replace("''", "'");
         }
         if let Some((_, inner)) = regex_captures!(r#"^"(.*)"$"#, raw) {
-            return inner.replace("\\\"", "\"");
+            let mut out = String::with_capacity(inner.len());
+            let mut chars = inner.chars();
+            while let Some(ch) = chars.next() {
+                if ch == '\\'
+                    && let Some(esc) = chars.next()
+                {
+                    match esc {
+                        'n' => out.push('\n'),
+                        'r' => out.push('\r'),
+                        't' => out.push('\t'),
+                        '"' => out.push('"'),
+                        '\\' => out.push('\\'),
+                        other => {
+                            out.push('\\');
+                            out.push(other);
+                        }
+                    }
+                    continue;
+                }
+                out.push(ch);
+            }
+            return out;
         }
         raw.to_string()
+    }
+
+    fn finalize_block_scalar(lines: &[String], strip_trailing: bool) -> String {
+        let indent = lines
+            .iter()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| line.len() - line.trim_start().len())
+            .min()
+            .unwrap_or(0);
+        let mut stripped: Vec<&str> = lines
+            .iter()
+            .map(|line| {
+                if line.len() >= indent {
+                    &line[indent..]
+                } else {
+                    ""
+                }
+            })
+            .collect();
+        while stripped.last().is_some_and(|line| line.is_empty()) {
+            stripped.pop();
+        }
+        let mut joined = stripped.join("\n");
+        if !strip_trailing && !joined.is_empty() {
+            joined.push('\n');
+        }
+        joined
     }
 
     fn resolve_manifest_url(source_url: &Url, reference: &str) -> Result<Url> {

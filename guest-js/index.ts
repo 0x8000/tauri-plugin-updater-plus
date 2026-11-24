@@ -62,13 +62,15 @@ interface DownloadResult {
   summary: DownloadSummary;
 }
 
+class PackageHandle extends Resource {}
+
 export class Update extends Resource {
   readonly currentVersion: string;
   readonly version: string;
   readonly date?: string;
   readonly body?: string;
   readonly rawJson: Record<string, unknown>;
-  private downloadedPackageRid?: number;
+  private downloadedPackage?: PackageHandle;
 
   constructor(metadata: UpdateMetadata) {
     super(metadata.rid);
@@ -83,6 +85,10 @@ export class Update extends Resource {
     onEvent?: (event: DownloadEvent) => void,
     options?: DownloadOptions,
   ): Promise<DownloadSummary> {
+    if (this.downloadedPackage !== undefined) {
+      await this.downloadedPackage.close().catch(() => {});
+      this.downloadedPackage = undefined;
+    }
     const channel = new Channel<DownloadEvent>();
     if (onEvent) {
       channel.onmessage = onEvent;
@@ -95,21 +101,29 @@ export class Update extends Resource {
         rid: this.rid,
       },
     );
-    this.downloadedPackageRid = result.rid;
+    this.downloadedPackage = new PackageHandle(result.rid);
     return result.summary;
   }
 
   async install(restartAfterInstall?: boolean): Promise<void> {
-    if (this.downloadedPackageRid === undefined) {
+    if (this.downloadedPackage === undefined) {
       throw new Error('Update package must be downloaded before installing');
     }
     await invoke<void>('plugin:updater-plus|install', {
       options:
         restartAfterInstall === undefined ? undefined : { restartAfterInstall },
-      packageRid: this.downloadedPackageRid,
+      packageRid: this.downloadedPackage.rid,
       updateRid: this.rid,
     });
-    this.downloadedPackageRid = undefined;
+    this.downloadedPackage = undefined;
+  }
+
+  override async close(): Promise<void> {
+    if (this.downloadedPackage !== undefined) {
+      await this.downloadedPackage.close().catch(() => {});
+      this.downloadedPackage = undefined;
+    }
+    await super.close();
   }
 
   async downloadAndInstall(

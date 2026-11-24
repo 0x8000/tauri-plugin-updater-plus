@@ -1,5 +1,3 @@
-use std::fs::File;
-use std::io::Write;
 use std::path::Path;
 
 use futures_util::StreamExt;
@@ -8,78 +6,19 @@ use lazy_regex::regex_is_match;
 use reqwest::header::{
     ACCEPT_RANGES, AUTHORIZATION, CONTENT_TYPE, COOKIE, HeaderMap, HeaderValue, RANGE,
 };
+use tokio::io::AsyncWriteExt;
 use url::Url;
 
+use super::{BatchOutcome, ByteRange, RangeRequestTarget, SingleOutcome, TransferOptions};
 use crate::blockmap::BlockMap;
 use crate::listener::{DownloadEvent, DownloadListener};
 use crate::multipart::{ByteRangeParser, ByteRangePart};
 use crate::{Error, Result};
 
 const MAX_RANGE_HEADER_BYTES: usize = 6 * 1024;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ByteRange {
-    pub(crate) start: u64,
-    pub(crate) end: u64,
-}
-
-impl ByteRange {
-    pub(crate) fn from_offset_len(offset: u64, length: u64) -> Result<Self> {
-        if length == 0 {
-            return Err(Error::DifferentialTransfer(
-                "byte range length must be positive".into(),
-            ));
-        }
-        let end = offset
-            .checked_add(length - 1)
-            .ok_or_else(|| Error::DifferentialTransfer("byte range end overflow".into()))?;
-        Ok(Self { start: offset, end })
-    }
-
-    pub(crate) fn len(self) -> u64 {
-        self.end - self.start + 1
-    }
-}
-
-pub(crate) struct RangeRequestTarget<'a> {
-    pub(crate) original_url: &'a Url,
-    pub(crate) request_url: &'a Url,
-}
-
-pub(crate) enum BatchOutcome {
-    Parts {
-        parts: Vec<ByteRangePart>,
-        final_url: Url,
-    },
-    NeedSingleRange,
-    FullResponse(reqwest::Response),
-}
-
-pub(crate) enum SingleOutcome {
-    Part { part: ByteRangePart, final_url: Url },
-    FullResponse(reqwest::Response),
-}
-
-/// Tuning options controlling HTTP range batching and concurrency.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TransferOptions {
-    /// Maximum number of byte ranges packed into one `multipart/byteranges` request.
-    pub max_ranges_per_request: usize,
-    /// Override multi-range usage (`None` auto-detects single-range-only hosts like GitHub/S3).
-    pub use_multiple_range_request: Option<bool>,
-    /// Maximum concurrent single-range requests when running in single-range mode.
-    pub max_concurrent_ranges: usize,
-}
-
-impl Default for TransferOptions {
-    fn default() -> Self {
-        Self {
-            max_ranges_per_request: 128,
-            use_multiple_range_request: None,
-            max_concurrent_ranges: 4,
-        }
-    }
-}
+const MAX_BLOCKMAP_WIRE_BYTES: usize = 32 * 1024 * 1024;
+const MULTIPART_FRAMING_SLACK_PER_PART: u64 = 1024;
+const MULTIPART_FRAMING_BASE_SLACK: u64 = 64 * 1024;
 
 pub(crate) struct TransferExecutor {
     client: reqwest::Client,
@@ -170,7 +109,7 @@ impl TransferExecutor {
                 status: response.status().as_u16(),
             });
         }
-        let bytes = response.bytes().await?;
+        let bytes = Self::read_bounded_body(response, MAX_BLOCKMAP_WIRE_BYTES, "blockmap").await?;
         BlockMap::from_bytes(&bytes)
     }
 
@@ -222,10 +161,24 @@ impl TransferExecutor {
             .to_string();
 
         if let Some(boundary) = ByteRangeParser::extract_boundary(&content_type) {
-            let body = response.bytes().await?;
+            let payload_sum: u64 = ranges.iter().map(|r| r.len()).sum();
+            let max_wire = payload_sum
+                .saturating_add(MULTIPART_FRAMING_BASE_SLACK)
+                .saturating_add((ranges.len() as u64) * MULTIPART_FRAMING_SLACK_PER_PART);
+            let cap = usize::try_from(max_wire).unwrap_or(usize::MAX);
+            let body = Self::read_bounded_body(response, cap, "multipart range response").await?;
             let parts = ByteRangeParser::parse_multipart(&body, &boundary)?;
             if parts.len() != ranges.len() {
                 return Ok(BatchOutcome::NeedSingleRange);
+            }
+            let mut expected: Vec<(u64, u64)> = ranges.iter().map(|r| (r.start, r.end)).collect();
+            let mut actual: Vec<(u64, u64)> = parts.iter().map(|p| (p.start, p.end)).collect();
+            expected.sort_unstable();
+            actual.sort_unstable();
+            if actual != expected {
+                return Err(Error::DifferentialTransfer(
+                    "multipart Content-Range offsets disagreed with requested ranges".into(),
+                ));
             }
             return Ok(BatchOutcome::Parts { parts, final_url });
         }
@@ -292,18 +245,18 @@ impl TransferExecutor {
         target: &Path,
         listener: &L,
     ) -> Result<u64> {
-        let mut file = File::create(target)?;
+        let mut file = tokio::fs::File::create(target).await?;
         let mut downloaded = 0u64;
         let mut stream = response.bytes_stream();
         while let Some(chunk) = stream.next().await {
             let chunk = chunk?;
-            file.write_all(&chunk)?;
+            file.write_all(&chunk).await?;
             downloaded = downloaded.saturating_add(chunk.len() as u64);
             listener.on_event(DownloadEvent::Progress {
                 chunk_length: chunk.len(),
             });
         }
-        file.flush()?;
+        file.flush().await?;
         Ok(downloaded)
     }
 
@@ -333,24 +286,58 @@ impl TransferExecutor {
             .map_err(|error| Error::InvalidHeader(format!("invalid Range header: {error}")))
     }
 
+    async fn read_bounded_body(
+        response: reqwest::Response,
+        max_bytes: usize,
+        label: &str,
+    ) -> Result<Vec<u8>> {
+        if let Some(len) = response.content_length()
+            && len > max_bytes as u64
+        {
+            return Err(Error::DifferentialTransfer(format!(
+                "{label} Content-Length {len} exceeds maximum allowed {max_bytes} bytes"
+            )));
+        }
+        let mut buffer = Vec::new();
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            if buffer.len().saturating_add(chunk.len()) > max_bytes {
+                return Err(Error::DifferentialTransfer(format!(
+                    "{label} exceeded maximum allowed {max_bytes} bytes"
+                )));
+            }
+            buffer.extend_from_slice(&chunk);
+        }
+        Ok(buffer)
+    }
+
     async fn read_single_partial(
         response: reqwest::Response,
         expected: ByteRange,
     ) -> Result<ByteRangePart> {
-        if let Some(header) = response
+        let raw_header = response
             .headers()
             .get(http::header::CONTENT_RANGE)
-            .and_then(|v| v.to_str().ok())
-        {
-            let (start, end) = ByteRangeParser::parse_content_range(header)?;
-            if start != expected.start || end != expected.end {
-                return Err(Error::DifferentialTransfer(format!(
-                    "Content-Range {start}-{end} disagreed with requested {}-{}",
-                    expected.start, expected.end
-                )));
-            }
+            .ok_or_else(|| {
+                Error::DifferentialTransfer(
+                    "HTTP 206 Partial Content response missing Content-Range header".into(),
+                )
+            })?;
+        let header = raw_header.to_str().map_err(|_| {
+            Error::DifferentialTransfer("Content-Range header is not valid ASCII".into())
+        })?;
+        let (start, end) = ByteRangeParser::parse_content_range(header)?;
+        if start != expected.start || end != expected.end {
+            return Err(Error::DifferentialTransfer(format!(
+                "Content-Range {start}-{end} disagreed with requested {}-{}",
+                expected.start, expected.end
+            )));
         }
-        let bytes = response.bytes().await?;
+        let max_len = usize::try_from(expected.len()).map_err(|_| {
+            Error::DifferentialTransfer("expected partial range overflows usize".into())
+        })?;
+        let bytes = Self::read_bounded_body(response, max_len, "partial range response").await?;
         if bytes.len() as u64 != expected.len() {
             return Err(Error::DifferentialTransfer(format!(
                 "partial response size {} disagreed with expected {}",
@@ -361,7 +348,7 @@ impl TransferExecutor {
         Ok(ByteRangePart {
             start: expected.start,
             end: expected.end,
-            data: bytes.to_vec(),
+            data: bytes,
         })
     }
 }

@@ -5,7 +5,7 @@ use lazy_regex::regex_captures;
 /// Parsed RFC 2253 X.509 Distinguished Name used for Windows Authenticode publisher matching.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DistinguishedName {
-    attributes: BTreeMap<String, String>,
+    attributes: BTreeMap<String, Vec<String>>,
 }
 
 impl DistinguishedName {
@@ -52,7 +52,7 @@ impl DistinguishedName {
 
         let trimmed = subject.trim();
         let chars: Vec<(usize, char)> = trimmed.char_indices().collect();
-        let mut attributes = BTreeMap::new();
+        let mut attributes: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut quoted = false;
         let mut key: Option<String> = None;
         let mut token = String::new();
@@ -99,7 +99,10 @@ impl DistinguishedName {
             }
             if matches!(ch, ',' | ';' | '+') {
                 if let Some(attr) = key.take() {
-                    attributes.insert(attr, std::mem::take(&mut token));
+                    attributes
+                        .entry(attr)
+                        .or_default()
+                        .push(std::mem::take(&mut token));
                 } else {
                     token.clear();
                 }
@@ -130,28 +133,36 @@ impl DistinguishedName {
         }
 
         if let Some(attr) = key {
-            attributes.insert(attr, token);
+            attributes.entry(attr).or_default().push(token);
         }
         Self { attributes }
     }
 
     pub(crate) fn into_map(self) -> BTreeMap<String, String> {
         self.attributes
+            .into_iter()
+            .map(|(k, values)| (k, values.join(", ")))
+            .collect()
     }
 
     pub(crate) fn is_valid(&self) -> bool {
         !self.attributes.is_empty()
-            && self
-                .attributes
-                .iter()
-                .all(|(k, v)| !k.is_empty() && !v.is_empty())
+            && self.attributes.iter().all(|(k, values)| {
+                !k.is_empty() && !values.is_empty() && values.iter().all(|v| !v.is_empty())
+            })
     }
 
     pub(crate) fn matches_candidate(&self, candidate: &Self) -> bool {
+        fn contains_in_order(actual: &[String], required: &[String]) -> bool {
+            let mut iter = actual.iter();
+            required.iter().all(|req| iter.any(|act| act == req))
+        }
+
         candidate.is_valid()
-            && candidate
-                .attributes
-                .iter()
-                .all(|(k, v)| self.attributes.get(k) == Some(v))
+            && candidate.attributes.iter().all(|(k, required)| {
+                self.attributes
+                    .get(k)
+                    .is_some_and(|actual| contains_in_order(actual, required))
+            })
     }
 }

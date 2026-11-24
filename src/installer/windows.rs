@@ -31,7 +31,7 @@ impl WindowsInstaller {
             )?;
         }
 
-        let (executable, parameters) = Self::build_launch_args(&installer_path, is_msi, context);
+        let (executable, parameters) = Self::build_launch_args(&installer_path, is_msi, context)?;
 
         let file_wide = Self::encode_wide(&executable);
         let params_wide = Self::encode_wide(&parameters);
@@ -60,12 +60,10 @@ impl WindowsInstaller {
         let mut header = [0u8; 512];
         let len = File::open(package_path)?.read(&mut header)?;
         let header = &header[..len];
+        let safe_name = Self::sanitize_stem(&context.app_name);
 
         let temp_dir = tempfile::Builder::new()
-            .prefix(&format!(
-                "{}-{}-updater-",
-                context.app_name, context.version
-            ))
+            .prefix(&format!("{safe_name}-{}-updater-", context.version))
             .tempdir()?;
 
         if infer::archive::is_zip(header) {
@@ -73,10 +71,19 @@ impl WindowsInstaller {
             archive.extract(temp_dir.path())?;
             for entry in std::fs::read_dir(temp_dir.path())? {
                 let path = entry?.path();
-                if path.extension() == Some(OsStr::new("exe")) {
+                if !path.is_file() {
+                    continue;
+                }
+                if path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+                {
                     return Ok((temp_dir, path, false));
                 }
-                if path.extension() == Some(OsStr::new("msi")) {
+                if path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("msi"))
+                {
                     return Ok((temp_dir, path, true));
                 }
             }
@@ -86,17 +93,16 @@ impl WindowsInstaller {
         }
 
         if infer::app::is_exe(header) {
-            let dest = temp_dir.path().join(format!(
-                "{}-{}-setup.exe",
-                context.app_name, context.version
-            ));
+            let dest = temp_dir
+                .path()
+                .join(format!("{safe_name}-{}-setup.exe", context.version));
             std::fs::copy(package_path, &dest)?;
             return Ok((temp_dir, dest, false));
         }
         if infer::archive::is_msi(header) {
             let dest = temp_dir
                 .path()
-                .join(format!("{}-{}.msi", context.app_name, context.version));
+                .join(format!("{safe_name}-{}.msi", context.version));
             std::fs::copy(package_path, &dest)?;
             return Ok((temp_dir, dest, true));
         }
@@ -109,7 +115,7 @@ impl WindowsInstaller {
         installer_path: &Path,
         is_msi: bool,
         context: &InstallContext,
-    ) -> (OsString, OsString) {
+    ) -> Result<(OsString, OsString)> {
         let mode = context
             .windows
             .as_ref()
@@ -122,9 +128,14 @@ impl WindowsInstaller {
             .unwrap_or(&[]);
 
         if is_msi {
-            let msiexec = std::env::var("SYSTEMROOT")
-                .map(|root| OsString::from(format!("{root}\\System32\\msiexec.exe")))
-                .unwrap_or_else(|_| OsString::from("msiexec.exe"));
+            let system_root = std::env::var("SystemRoot")
+                .or_else(|_| std::env::var("windir"))
+                .ok();
+            let msiexec = WindowsAuthenticodeVerifier::windows_system32_path(
+                system_root.as_deref(),
+                "msiexec.exe",
+            )
+            .map_err(|err| Error::Install(err.to_string()))?;
             let mut args = vec![format!("/i \"{}\"", installer_path.display())];
             match mode {
                 WindowsInstallMode::Passive => args.push("/passive".into()),
@@ -135,7 +146,7 @@ impl WindowsInstaller {
                 args.push("LAUNCHAPPONEXIT=1".into());
             }
             args.extend(extra.iter().cloned());
-            return (msiexec, OsString::from(args.join(" ")));
+            return Ok((OsString::from(msiexec), OsString::from(args.join(" "))));
         }
 
         let mut args = Vec::new();
@@ -149,10 +160,30 @@ impl WindowsInstaller {
             args.push("/R".into());
         }
         args.extend(extra.iter().cloned());
-        (
+        Ok((
             installer_path.as_os_str().to_os_string(),
             OsString::from(args.join(" ")),
-        )
+        ))
+    }
+
+    fn sanitize_stem(raw: &str) -> String {
+        let cleaned: String = raw
+            .chars()
+            .map(|ch| {
+                if matches!(ch, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+                    || ch.is_control()
+                {
+                    '_'
+                } else {
+                    ch
+                }
+            })
+            .collect();
+        if cleaned.is_empty() {
+            "app".into()
+        } else {
+            cleaned
+        }
     }
 
     fn encode_wide(value: &OsStr) -> Vec<u16> {

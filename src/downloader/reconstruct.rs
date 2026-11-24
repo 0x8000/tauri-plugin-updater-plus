@@ -1,8 +1,10 @@
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::blockmap::BlockMap;
+use crate::cache::{CachedPackageState, PackageCache};
+use crate::chunker::ChunkerConfig;
 use crate::listener::{DownloadEvent, DownloadListener};
 use crate::multipart::ByteRangePart;
 use crate::planner::{DownloadPlan, PlanOperation};
@@ -116,9 +118,20 @@ impl PackageReconstructor {
 
     pub(crate) fn write_part<L: DownloadListener>(
         target: &mut File,
+        total_size: u64,
         part: &ByteRangePart,
         listener: &L,
     ) -> Result<()> {
+        let end_exclusive = part
+            .start
+            .checked_add(part.data.len() as u64)
+            .ok_or_else(|| Error::DifferentialTransfer("range write offset overflow".into()))?;
+        if end_exclusive > total_size {
+            return Err(Error::DifferentialTransfer(format!(
+                "range write {}..{end_exclusive} exceeds target artifact size {total_size}",
+                part.start
+            )));
+        }
         target.seek(SeekFrom::Start(part.start))?;
         target.write_all(&part.data)?;
         listener.on_event(DownloadEvent::Progress {
@@ -149,5 +162,31 @@ impl PackageReconstructor {
             }
         }
         Ok(())
+    }
+
+    pub(crate) fn commit_verified_file(
+        cache: &PackageCache,
+        version: &str,
+        verification: &VerifyExpectation,
+        verified_file: &Path,
+        known_blockmap: Option<&BlockMap>,
+    ) -> Result<PathBuf> {
+        let actual_size = std::fs::metadata(verified_file)?.len();
+        let (blockmap, sha512) = match known_blockmap {
+            Some(map) if map.total_size() == actual_size => {
+                (map.clone(), verification.sha512.clone())
+            }
+            _ => {
+                let artifact =
+                    BlockMap::generate_from_path(verified_file, ChunkerConfig::default())?;
+                (artifact.blockmap, Some(artifact.sha512))
+            }
+        };
+        let state = CachedPackageState {
+            version: version.to_string(),
+            size: actual_size,
+            sha512,
+        };
+        cache.commit(verified_file, &blockmap, &state)
     }
 }

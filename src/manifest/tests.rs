@@ -59,12 +59,17 @@ fn parses_tauri_static_json_with_blockmap_extensions_and_candidate_precedence() 
     assert_eq!(reparsed.version, manifest.version);
     assert_eq!(reparsed.notes, manifest.notes);
     assert_eq!(reparsed.pub_date, manifest.pub_date);
-    assert_eq!(
-        reparsed
-            .resolve_platform(&["linux-x86_64-appimage".into()])
-            .expect("reparsed platform"),
-        preferred
-    );
+    assert_eq!(reparsed.platforms, manifest.platforms);
+
+    let map_yaml = manifest
+        .to_electron_yaml(&["linux-x86_64-appimage".into()])
+        .expect("serialize map target to electron yaml");
+    assert!(map_yaml.contains("url: myapp_0.2.0.AppImage"));
+    assert!(map_yaml.contains("blockMapUrl: 'https://cdn.example.com/custom.blockmap'"));
+    assert!(matches!(
+        manifest.to_electron_yaml(&["windows-x86_64".into()]),
+        Err(Error::TargetNotFound(ref target)) if target.contains("windows-x86_64")
+    ));
 }
 
 #[test]
@@ -89,6 +94,10 @@ releaseNotes: 'Reduced update download size'
         manifest.notes.as_deref(),
         Some("Reduced update download size")
     );
+    assert!(manifest.pub_date.is_some());
+    let single_json = manifest.to_tauri_json().expect("serialize single json");
+    let reparsed_single = ReleaseManifest::parse(&single_json, &source).expect("reparse single");
+    assert_eq!(reparsed_single.platforms, manifest.platforms);
     let platform = manifest
         .resolve_platform(&["linux-x86_64".into()])
         .expect("single platform");
@@ -134,11 +143,12 @@ fn roundtrips_generated_electron_yaml_including_all_artifact_fields() {
     let source = Url::parse("https://cdn.example.com/latest-linux.yml").expect("url");
     let json = r#"{
         "version": "0.3.0",
-        "notes": "Fix Bob's edge case",
+        "notes": "Fix Bob's edge case\nversion: 9.9.9\nKeep \"quotes\" and \\slashes\\",
         "pub_date": "2026-11-24T00:00:00Z",
         "url": "https://cdn.example.com/myapp-0.3.0.AppImage",
         "sha512": "abc123==",
         "size": 50000,
+        "blockmap_url": "https://cdn.example.com/custom/myapp-0.3.0.blockmap",
         "blockmap_size": 1200
     }"#;
     let manifest = ReleaseManifest::parse(json, &source).expect("parse json");
@@ -159,7 +169,25 @@ fn roundtrips_generated_electron_yaml_including_all_artifact_fields() {
     assert_eq!(next.url, orig.url);
     assert_eq!(next.sha512, orig.sha512);
     assert_eq!(next.size, orig.size);
+    assert_eq!(next.blockmap_url, orig.blockmap_url);
     assert_eq!(next.blockmap_size, orig.blockmap_size);
+
+    // Block scalar `|-` emitted by electron-builder must also preserve multiline notes cleanly.
+    let block_yaml = "\
+version: 0.4.0
+path: myapp-0.4.0.AppImage
+sha512: hash040==
+releaseNotes: |-
+  First bullet
+  version: 0.0.1
+releaseDate: '2026-11-24T00:00:00Z'
+";
+    let block_parsed = ReleaseManifest::parse(block_yaml, &source).expect("parse block scalar");
+    assert_eq!(block_parsed.version.to_string(), "0.4.0");
+    assert_eq!(
+        block_parsed.notes.as_deref(),
+        Some("First bullet\nversion: 0.0.1")
+    );
 }
 
 #[test]

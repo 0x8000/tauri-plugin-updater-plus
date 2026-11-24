@@ -25,11 +25,24 @@ fn commits_overwrites_and_preserves_source_when_seeding() {
 
     let base = cache.load_base().expect("loaded v2");
     assert_eq!(std::fs::read(&base.package_path).expect("read"), v2_payload);
-    assert_eq!(cache.state().expect("state").version, "0.2.0");
-    assert!(!dir.path().join("staging.pkg").exists());
-    assert!(!dir.path().join("staging.blockmap").exists());
-    assert!(!dir.path().join("staging.state.json").exists());
-    assert!(!dir.path().join("seed.pkg").exists());
+    assert_eq!(base.blockmap.total_size(), v2_payload.len() as u64);
+    let state = cache.state().expect("state");
+    assert_eq!(state.version, "0.2.0");
+    assert_eq!(state.size, v2_payload.len() as u64);
+    assert_eq!(
+        state.sha512.as_deref(),
+        Some(crate::verifier::ArtifactVerifier::sha512_bytes(&v2_payload).as_str())
+    );
+    let entries: Vec<String> = std::fs::read_dir(dir.path())
+        .expect("read dir")
+        .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        entries
+            .iter()
+            .all(|name| !name.starts_with(".staging-") && !name.starts_with(".seed-")),
+        "unexpected leftover temp files: {entries:?}"
+    );
 }
 
 #[test]
@@ -71,15 +84,38 @@ fn leaves_previous_cache_intact_when_commit_blockmap_is_invalid() {
 #[test]
 fn falls_back_to_configured_appimage_when_cache_is_empty() {
     let dir = tempfile::tempdir().expect("temp dir");
+    let missing_cache = PackageCache::with_appimage_fallback(
+        dir.path().join("empty"),
+        Some(dir.path().join("missing.AppImage")),
+    );
+    assert!(missing_cache.load_base().is_none());
+
     let appimage_path = dir.path().join("MyApp.AppImage");
     let payload = vec![0x55u8; 80 * 1024];
     std::fs::write(&appimage_path, &payload).expect("write appimage");
 
+    let cache_dir = dir.path().join("cache");
     let cache =
-        PackageCache::with_appimage_fallback(dir.path().join("cache"), Some(appimage_path.clone()));
+        PackageCache::with_appimage_fallback(cache_dir.clone(), Some(appimage_path.clone()));
     let base = cache.load_base().expect("appimage fallback");
     assert_eq!(base.package_path, appimage_path);
     assert_eq!(base.blockmap.total_size(), payload.len() as u64);
+
+    // Seeded cache takes precedence over the older running AppImage.
+    let cached_src = dir.path().join("v2.AppImage");
+    let cached_payload = vec![0x77u8; 96 * 1024];
+    std::fs::write(&cached_src, &cached_payload).expect("write v2");
+    cache.seed_from_file(&cached_src, "0.2.0").expect("seed v2");
+    let preferred = cache.load_base().expect("cached base preferred");
+    assert_eq!(preferred.package_path, cache_dir.join("current.pkg"));
+    assert_eq!(preferred.blockmap.total_size(), cached_payload.len() as u64);
+
+    // Corrupting the cached package falls back cleanly to the running AppImage.
+    std::fs::write(cache_dir.join("current.pkg"), b"truncated").expect("corrupt cached pkg");
+    let recovered = cache
+        .load_base()
+        .expect("fallback to appimage on corrupt cache");
+    assert_eq!(recovered.package_path, appimage_path);
 }
 
 #[test]

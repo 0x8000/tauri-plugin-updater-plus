@@ -1,4 +1,3 @@
-use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -39,7 +38,11 @@ impl LinuxInstaller {
         header: &[u8],
         target_path: &Path,
     ) -> Result<()> {
-        let target_perms = target_path.metadata()?.permissions();
+        let target_meta = target_path.metadata()?;
+        if !target_meta.is_file() {
+            return Err(Error::UnsupportedPlatform);
+        }
+        let target_perms = target_meta.permissions();
         let target_dir = target_path.parent().ok_or_else(|| {
             Error::Install("cannot determine parent directory of target AppImage".into())
         })?;
@@ -80,7 +83,10 @@ impl LinuxInstaller {
                 && entry
                     .path()
                     .ok()
-                    .and_then(|path| path.extension().map(|ext| ext == OsStr::new("AppImage")))
+                    .and_then(|path| {
+                        path.extension()
+                            .map(|ext| ext.eq_ignore_ascii_case("AppImage"))
+                    })
                     .unwrap_or(false);
             if is_appimage_file {
                 entry.unpack(target_path)?;
@@ -100,7 +106,7 @@ impl LinuxInstaller {
             let is_appimage_file = entry.is_file()
                 && Path::new(entry.name())
                     .extension()
-                    .is_some_and(|ext| ext == OsStr::new("AppImage"));
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("AppImage"));
             if is_appimage_file {
                 let mut out = File::create(target_path)?;
                 std::io::copy(&mut entry, &mut out)?;
@@ -113,14 +119,25 @@ impl LinuxInstaller {
     }
 
     fn install_system_package(package_path: &Path, tool: &str, flag: &str) -> Result<()> {
-        if let Ok(status) = Command::new("pkexec")
+        match Command::new("pkexec")
             .arg(tool)
             .arg(flag)
+            .arg("--")
             .arg(package_path)
             .status()
-            && status.success()
         {
-            return Ok(());
+            Ok(status) if status.success() => return Ok(()),
+            Ok(status) if status.code() == Some(126) => {
+                return Err(Error::Install(
+                    "package installation cancelled by user".into(),
+                ));
+            }
+            Ok(status) if status.code() != Some(127) => {
+                return Err(Error::Install(format!(
+                    "package installation via `pkexec {tool} {flag}` exited with status {status}"
+                )));
+            }
+            _ => {}
         }
 
         if let Some(password) = Self::prompt_graphical_password() {
@@ -128,6 +145,7 @@ impl LinuxInstaller {
                 .arg("-S")
                 .arg(tool)
                 .arg(flag)
+                .arg("--")
                 .arg(package_path)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
@@ -142,8 +160,10 @@ impl LinuxInstaller {
         }
 
         let status = Command::new("sudo")
+            .arg("-n")
             .arg(tool)
             .arg(flag)
+            .arg("--")
             .arg(package_path)
             .status()?;
         if status.success() {

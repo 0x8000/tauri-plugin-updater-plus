@@ -26,7 +26,7 @@ Add the plugin to your Tauri app's `src-tauri/Cargo.toml`:
 
 ```toml
 [dependencies]
-tauri-plugin-updater-plus = "0.1"
+tauri-plugin-updater-plus = "0.2"
 ```
 
 Register the plugin in `src-tauri/src/lib.rs`:

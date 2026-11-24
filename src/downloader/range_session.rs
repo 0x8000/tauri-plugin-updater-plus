@@ -53,14 +53,20 @@ impl RangeFetchOutcome {
 pub(crate) struct RangeSession<'a> {
     transfer: &'a TransferExecutor,
     artifact_url: &'a Url,
+    total_size: u64,
     effective_url: RwLock<Url>,
 }
 
 impl<'a> RangeSession<'a> {
-    pub(crate) fn new(transfer: &'a TransferExecutor, artifact_url: &'a Url) -> Self {
+    pub(crate) fn new(
+        transfer: &'a TransferExecutor,
+        artifact_url: &'a Url,
+        total_size: u64,
+    ) -> Self {
         Self {
             transfer,
             artifact_url,
+            total_size,
             effective_url: RwLock::new(artifact_url.clone()),
         }
     }
@@ -110,9 +116,12 @@ impl<'a> RangeSession<'a> {
                 Ok(BatchOutcome::Parts { parts, final_url }) => {
                     self.store_effective_url(final_url).await;
                     for part in parts {
-                        if let Err(error) =
-                            PackageReconstructor::write_part(target, &part, listener)
-                        {
+                        if let Err(error) = PackageReconstructor::write_part(
+                            target,
+                            self.total_size,
+                            &part,
+                            listener,
+                        ) {
                             return RangeFetchOutcome::Fallback(FallbackDetail::reason(format!(
                                 "write multipart range failed: {error}"
                             )));
@@ -177,7 +186,9 @@ impl<'a> RangeSession<'a> {
         match first_outcome {
             Ok(SingleOutcome::Part { part, final_url }) => {
                 self.store_effective_url(final_url).await;
-                if let Err(error) = PackageReconstructor::write_part(target, &part, listener) {
+                if let Err(error) =
+                    PackageReconstructor::write_part(target, self.total_size, &part, listener)
+                {
                     return RangeFetchOutcome::Fallback(FallbackDetail::reason(format!(
                         "write range failed: {error}"
                     )));
@@ -214,7 +225,9 @@ impl<'a> RangeSession<'a> {
             match outcome {
                 Ok(SingleOutcome::Part { part, final_url }) => {
                     self.store_effective_url(final_url).await;
-                    if let Err(error) = PackageReconstructor::write_part(target, &part, listener) {
+                    if let Err(error) =
+                        PackageReconstructor::write_part(target, self.total_size, &part, listener)
+                    {
                         return RangeFetchOutcome::Fallback(FallbackDetail::reason(format!(
                             "write range failed: {error}"
                         )));
