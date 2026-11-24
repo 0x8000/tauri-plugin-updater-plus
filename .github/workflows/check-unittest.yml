@@ -13,6 +13,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: latest
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
@@ -20,12 +28,26 @@ jobs:
           toolchain: 1.95.0
           components: rustfmt
 
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install pre-commit
+        run: |
+          python3 -m pip install pre-commit
+
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
 
-      - name: Cargo fmt check
+      - name: Install taplo
+        uses: taiki-e/install-action@v2.86.5
+        with:
+          tool: taplo-cli
+
+      - name: Pre-commit
         run: |
-          cargo fmt --all -- --check
+          pre-commit run -a
 
       - name: Cargo test (default plugin features)
         run: |

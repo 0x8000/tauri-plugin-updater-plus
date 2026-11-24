@@ -6,9 +6,9 @@ test:
     cargo test --no-default-features --features cli
     cargo test --all-features
 
-# Run formatting and clippy lints
+# Run pre-commit style checks and clippy lints
 lint:
-    cargo fmt --all -- --check
+    pre-commit run -a
     cargo clippy --all-targets --all-features -- -D warnings
     cargo clippy --no-default-features --features cli --bin blockmap-gen -- -D warnings
 

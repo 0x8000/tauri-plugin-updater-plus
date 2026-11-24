@@ -90,9 +90,9 @@ export class Update extends Resource {
     const result = await invoke<DownloadResult>(
       'plugin:updater-plus|download',
       {
-        rid: this.rid,
         onEvent: channel,
         options,
+        rid: this.rid,
       },
     );
     this.downloadedPackageRid = result.rid;
@@ -104,10 +104,10 @@ export class Update extends Resource {
       throw new Error('Update package must be downloaded before installing');
     }
     await invoke<void>('plugin:updater-plus|install', {
-      updateRid: this.rid,
-      packageRid: this.downloadedPackageRid,
       options:
         restartAfterInstall === undefined ? undefined : { restartAfterInstall },
+      packageRid: this.downloadedPackageRid,
+      updateRid: this.rid,
     });
     this.downloadedPackageRid = undefined;
   }
@@ -123,9 +123,9 @@ export class Update extends Resource {
     return await invoke<DownloadSummary>(
       'plugin:updater-plus|download_and_install',
       {
-        rid: this.rid,
         onEvent: channel,
         options,
+        rid: this.rid,
       },
     );
   }

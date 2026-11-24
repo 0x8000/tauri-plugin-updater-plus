@@ -14,7 +14,9 @@ links = "tauri-plugin-updater-plus"
 exclude = [
   "/.github",
   "/.editorconfig",
+  "/.pre-commit-config.yaml",
   "/.release-please-manifest.json",
+  "/biome.jsonc",
   "/Cross.toml",
   "/guest-js",
   "/justfile",
