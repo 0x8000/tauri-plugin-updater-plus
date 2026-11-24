@@ -276,3 +276,108 @@ async fn chains_first_full_download_into_subsequent_differential_update_with_ele
         ));
     }
 }
+
+#[test]
+fn target_candidates_for_android_prefer_arch_then_universal_fallback() {
+    assert_eq!(
+        super::TargetResolver::target_candidates_for("android", "aarch64", None),
+        vec![
+            "android-aarch64-apk",
+            "android-aarch64",
+            "android-universal",
+            "android",
+        ]
+    );
+    assert_eq!(
+        super::TargetResolver::target_candidates_for("linux", "x86_64", Some("deb")),
+        vec!["linux-x86_64-deb", "linux-x86_64"]
+    );
+}
+
+#[tokio::test]
+async fn downloads_and_hands_off_verified_apk_to_android_installer() {
+    use std::io::Write;
+    use zip::ZipWriter;
+    use zip::write::SimpleFileOptions;
+
+    use crate::installer::AndroidApkLauncher;
+
+    let state = ReleaseServerState::default();
+    let base_url = spawn_release_server(state.clone()).await;
+
+    let mut apk_buf = std::io::Cursor::new(Vec::new());
+    {
+        let mut writer = ZipWriter::new(&mut apk_buf);
+        writer
+            .start_file("AndroidManifest.xml", SimpleFileOptions::default())
+            .expect("start entry");
+        writer.write_all(b"apk-v2-payload").expect("write entry");
+        writer.finish().expect("finish");
+    }
+    let apk_bytes = apk_buf.into_inner();
+    let apk_art =
+        BlockMap::generate(apk_bytes.as_slice(), "file", ChunkerConfig::default()).expect("map");
+
+    let manifest = serde_json::json!({
+        "version": "0.2.0",
+        "notes": "Android APK update",
+        "pub_date": "2026-11-24T02:00:00Z",
+        "platforms": {
+            "android-universal": {
+                "url": base_url.join("fastnet_0.2.0_universal.apk").expect("url"),
+                "sha512": apk_art.sha512,
+                "size": apk_art.size,
+            }
+        }
+    });
+    {
+        let mut files = state.files.lock().expect("lock");
+        files.insert(
+            "latest.json".into(),
+            serde_json::to_vec(&manifest).expect("json"),
+        );
+        files.insert("fastnet_0.2.0_universal.apk".into(), apk_bytes.clone());
+        files.insert(
+            "fastnet_0.2.0_universal.apk.blockmap".into(),
+            apk_art.blockmap.to_gzip_bytes().expect("gz"),
+        );
+    }
+
+    let temp = tempfile::tempdir().expect("temp dir");
+    let cache = PackageCache::with_appimage_fallback(temp.path().join("cache"), None);
+    let launched_path = Arc::new(Mutex::new(None));
+    let launched_clone = Arc::clone(&launched_path);
+    let launcher = AndroidApkLauncher::new(move |path| {
+        *launched_clone.lock().expect("lock") = Some(path.to_path_buf());
+        Ok(())
+    });
+
+    let updater = UpdaterBuilder::new(
+        "fastnet".into(),
+        Version::new(0, 1, 0),
+        temp.path().join("cache"),
+        cache,
+    )
+    .target("android-universal")
+    .endpoints(vec![base_url.join("latest.json").expect("url")])
+    .android_installer(launcher)
+    .build()
+    .expect("updater");
+
+    let update = updater.check().await.expect("check").expect("update");
+    assert_eq!(update.version, "0.2.0");
+    let listener = RecordingListener {
+        events: Mutex::new(Vec::new()),
+    };
+    let summary = update
+        .download_and_install(&listener)
+        .await
+        .expect("download and install apk");
+    assert_eq!(summary.total_bytes, apk_bytes.len() as u64);
+    let installed_path = launched_path
+        .lock()
+        .expect("lock")
+        .clone()
+        .expect("android launcher called");
+    assert_eq!(std::fs::read(&installed_path).expect("read"), apk_bytes);
+}

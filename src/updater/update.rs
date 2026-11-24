@@ -12,7 +12,7 @@ use url::Url;
 use crate::cache::PackageCache;
 use crate::config::Config;
 use crate::downloader::{DifferentialDownloader, ProviderDownloadRequest};
-use crate::installer::{InstallContext, PlatformInstaller};
+use crate::installer::{AndroidApkLauncher, AndroidInstaller, InstallContext, PlatformInstaller};
 use crate::listener::{DownloadListener, DownloadSummary};
 use crate::provider::{ArtifactId, TransferOverrides, UpdateProvider};
 use crate::session::DownloadedPackage;
@@ -49,6 +49,7 @@ pub struct Update {
     pub(crate) overrides: TransferOverrides,
     pub(crate) config: Config,
     pub(crate) restart_after_install: bool,
+    pub(crate) android_installer: Option<AndroidApkLauncher>,
 }
 
 impl fmt::Debug for Update {
@@ -144,6 +145,9 @@ impl Update {
 
     /// Installs a previously downloaded and verified package file in place.
     pub fn install_file(&self, package_path: &Path) -> Result<()> {
+        if let Some(launcher) = &self.android_installer {
+            return AndroidInstaller::install_with_launcher(package_path, launcher);
+        }
         let context = InstallContext {
             app_name: self.app_name.clone(),
             version: self.version.clone(),

@@ -1,5 +1,12 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use url::Url;
+
+use crate::{Error, Result};
+
+#[cfg(test)]
+mod tests;
 
 /// Windows installer interaction mode matching Tauri's NSIS/MSI conventions.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,7 +40,7 @@ pub struct WindowsConfig {
     pub allow_catalog_signature: bool,
 }
 
-/// Plugin configuration read from `tauri.conf.json` under `plugins.updater-plus`.
+/// Plugin configuration read from `tauri.conf.json` under `plugins.updater` and/or `plugins.updater-plus`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Config {
@@ -70,6 +77,60 @@ pub struct Config {
     /// Optional Windows installer configuration.
     #[serde(default)]
     pub windows: Option<WindowsConfig>,
+}
+
+impl Config {
+    /// Resolves updater configuration from Tauri's `plugins` config map.
+    ///
+    /// Reads `plugins.updater` as the base configuration so apps with
+    /// `bundle.createUpdaterArtifacts: true` satisfy Tauri CLI without duplicating keys,
+    /// and overlays any fields from `plugins.updater-plus` on top.
+    pub fn from_tauri_plugins(plugins: &HashMap<String, serde_json::Value>) -> Result<Self> {
+        fn non_null_object<'a>(
+            plugins: &'a HashMap<String, serde_json::Value>,
+            key: &str,
+        ) -> Result<Option<&'a serde_json::Value>> {
+            match plugins.get(key) {
+                None | Some(serde_json::Value::Null) => Ok(None),
+                Some(val) if val.is_object() => Ok(Some(val)),
+                Some(_) => Err(Error::InvalidConfig(format!(
+                    "plugins.{key} must be a JSON object"
+                ))),
+            }
+        }
+
+        fn merge_json_objects(base: &mut serde_json::Value, overlay: serde_json::Value) {
+            if let (serde_json::Value::Object(base_map), serde_json::Value::Object(overlay_map)) =
+                (base, overlay)
+            {
+                for (key, value) in overlay_map {
+                    match base_map.get_mut(&key) {
+                        Some(existing) if existing.is_object() && value.is_object() => {
+                            merge_json_objects(existing, value);
+                        }
+                        _ => {
+                            base_map.insert(key, value);
+                        }
+                    }
+                }
+            }
+        }
+
+        let base = non_null_object(plugins, "updater")?;
+        let overlay = non_null_object(plugins, "updater-plus")?;
+        let merged = match (base, overlay) {
+            (None, None) => return Ok(Self::default()),
+            (Some(value), None) | (None, Some(value)) => value.clone(),
+            (Some(base_val), Some(overlay_val)) => {
+                let mut combined = base_val.clone();
+                merge_json_objects(&mut combined, overlay_val.clone());
+                combined
+            }
+        };
+        serde_json::from_value(merged).map_err(|error| {
+            Error::InvalidConfig(format!("failed to parse updater config: {error}"))
+        })
+    }
 }
 
 impl Default for Config {

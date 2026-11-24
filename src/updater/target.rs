@@ -30,14 +30,26 @@ impl TargetResolver {
 
     /// Builds ordered manifest lookup candidates, preferring `{target}-{bundle_type}` over `{target}`.
     pub fn target_candidates(override_target: Option<&str>) -> Vec<String> {
-        let base = override_target
-            .map(ToString::to_string)
-            .or_else(Self::current_target)
-            .unwrap_or_else(|| "unknown".to_string());
+        if let Some(target) = override_target {
+            return vec![target.to_string()];
+        }
+        let (Some(os), Some(arch)) = (Self::current_os(), Self::current_arch()) else {
+            return vec!["unknown".to_string()];
+        };
+        Self::target_candidates_for(os, arch, Self::current_bundle_name())
+    }
+
+    /// Builds ordered manifest lookup candidates for an explicit `(os, arch, bundle)` tuple.
+    pub fn target_candidates_for(os: &str, arch: &str, bundle: Option<&str>) -> Vec<String> {
+        let base = format!("{os}-{arch}");
+        if os == "android" {
+            let mut candidates = vec![format!("{base}-apk"), base];
+            candidates.push("android-universal".to_string());
+            candidates.push("android".to_string());
+            return candidates;
+        }
         let mut candidates = Vec::new();
-        if override_target.is_none()
-            && let Some(bundle) = Self::current_bundle_name()
-        {
+        if let Some(bundle) = bundle {
             candidates.push(format!("{base}-{bundle}"));
         }
         candidates.push(base);
@@ -147,6 +159,8 @@ impl TargetResolver {
             Some("darwin")
         } else if cfg!(target_os = "windows") {
             Some("windows")
+        } else if cfg!(target_os = "android") {
+            Some("android")
         } else {
             None
         }

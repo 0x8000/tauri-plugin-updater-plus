@@ -13,6 +13,7 @@ use crate::cache::PackageCache;
 use crate::config::Config;
 #[cfg(feature = "http")]
 use crate::downloader::TransferOptions;
+use crate::installer::AndroidApkLauncher;
 use crate::provider::{ResolveContext, ResolvedRelease, TransferOverrides, UpdateProvider};
 use crate::{Error, Result};
 
@@ -35,6 +36,7 @@ pub struct UpdaterBuilder {
     provider: Option<Arc<dyn UpdateProvider>>,
     target: Option<String>,
     overrides: TransferOverrides,
+    android_installer: Option<AndroidApkLauncher>,
 }
 
 impl UpdaterBuilder {
@@ -54,7 +56,14 @@ impl UpdaterBuilder {
             provider: None,
             target: None,
             overrides: TransferOverrides::default(),
+            android_installer: None,
         }
+    }
+
+    #[cfg(any(test, feature = "plugin"))]
+    pub(crate) fn android_installer(mut self, launcher: AndroidApkLauncher) -> Self {
+        self.android_installer = Some(launcher);
+        self
     }
 
     /// Replaces the updater configuration.
@@ -191,6 +200,7 @@ impl UpdaterBuilder {
             provider,
             target: self.target,
             overrides: self.overrides,
+            android_installer: self.android_installer,
         })
     }
 }
@@ -206,6 +216,7 @@ pub struct Updater {
     provider: Arc<dyn UpdateProvider>,
     target: Option<String>,
     overrides: TransferOverrides,
+    android_installer: Option<AndroidApkLauncher>,
 }
 
 impl Updater {
@@ -266,6 +277,7 @@ impl Updater {
             overrides: self.overrides.clone(),
             config: self.config.clone(),
             restart_after_install: true,
+            android_installer: self.android_installer.clone(),
         }))
     }
 

@@ -87,6 +87,7 @@ struct PluginState {
     target: Option<String>,
     metadata: Vec<(String, String)>,
     cache: PackageCache,
+    android_installer: Option<installer::AndroidApkLauncher>,
 }
 
 /// Extension methods on Tauri managers to build and invoke the differential updater.
@@ -107,8 +108,13 @@ impl<R: Runtime, T: Manager<R>> UpdaterPlusExt<R> for T {
     fn updater_plus_builder(&self) -> Result<UpdaterBuilder> {
         let app = self.app_handle();
         let state = self.state::<PluginState>();
-        let current_exe = tauri::utils::platform::current_exe()?;
-        let extract_path = TargetResolver::extract_path_from_executable(&current_exe)?;
+        #[cfg(target_os = "android")]
+        let extract_path = state.cache.directory().to_path_buf();
+        #[cfg(not(target_os = "android"))]
+        let extract_path = {
+            let current_exe = tauri::utils::platform::current_exe()?;
+            TargetResolver::extract_path_from_executable(&current_exe)?
+        };
 
         let mut builder = UpdaterBuilder::new(
             app.package_info().name.clone(),
@@ -126,6 +132,9 @@ impl<R: Runtime, T: Manager<R>> UpdaterPlusExt<R> for T {
         }
         for (key, value) in &state.metadata {
             builder = builder.metadata(key.clone(), value.clone());
+        }
+        if let Some(launcher) = &state.android_installer {
+            builder = builder.android_installer(launcher.clone());
         }
         Ok(builder)
     }
@@ -200,7 +209,7 @@ impl Builder {
 
         PluginBuilder::<R, Option<Config>>::new("updater-plus")
             .setup(move |app, api| {
-                let mut config = api.config().clone().unwrap_or_default();
+                let mut config = Config::from_tauri_plugins(&app.config().plugins.0)?;
                 if let Some(key) = pubkey {
                     config.pubkey = Some(key);
                 }
@@ -209,12 +218,52 @@ impl Builder {
                     .app_cache_dir()
                     .unwrap_or_else(|_| std::env::temp_dir().join(&app.package_info().name))
                     .join("updater-plus");
+                #[cfg(target_os = "android")]
+                let (cache, android_installer) = {
+                    #[derive(serde::Deserialize)]
+                    struct BaseApkResponse {
+                        path: Option<String>,
+                    }
+                    #[derive(serde::Serialize)]
+                    struct InstallApkPayload {
+                        path: String,
+                    }
+                    let mobile =
+                        api.register_android_plugin("com.plugin.updaterplus", "UpdaterPlusPlugin")?;
+                    let base_apk = mobile
+                        .run_mobile_plugin::<BaseApkResponse>("getBaseApkPath", ())
+                        .ok()
+                        .and_then(|resp| resp.path)
+                        .filter(|path| !path.is_empty())
+                        .map(std::path::PathBuf::from);
+                    let cache = PackageCache::with_appimage_fallback(cache_dir, base_apk);
+                    let launcher = installer::AndroidApkLauncher::new(move |apk_path| {
+                        mobile
+                            .run_mobile_plugin::<serde_json::Value>(
+                                "installApk",
+                                InstallApkPayload {
+                                    path: apk_path.to_string_lossy().into_owned(),
+                                },
+                            )
+                            .map(|_| ())
+                            .map_err(|err| {
+                                Error::Install(format!("Android APK install failed: {err}"))
+                            })
+                    });
+                    (cache, Some(launcher))
+                };
+                #[cfg(not(target_os = "android"))]
+                let (cache, android_installer) = {
+                    let _ = api;
+                    (PackageCache::new(cache_dir), None)
+                };
                 app.manage(PluginState {
                     config,
                     provider,
                     target,
                     metadata,
-                    cache: PackageCache::new(cache_dir),
+                    cache,
+                    android_installer,
                 });
                 Ok(())
             })
