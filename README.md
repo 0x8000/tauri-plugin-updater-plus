@@ -1,5 +1,8 @@
 # tauri-plugin-updater-plus
 
+[![crates.io](https://img.shields.io/crates/v/tauri-plugin-updater-plus.svg)](https://crates.io/crates/tauri-plugin-updater-plus)
+[![docs.rs](https://docs.rs/tauri-plugin-updater-plus/badge.svg)](https://docs.rs/tauri-plugin-updater-plus)
+
 Electron-style blockmap differential updater plugin and CLI for Tauri v3 applications.
 
 ## How It Works
