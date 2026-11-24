@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
+#[cfg(feature = "plugin")]
 use tauri::utils::config::BundleType;
+#[cfg(feature = "plugin")]
 use tauri::utils::platform::bundle_type;
 use url::Url;
 
@@ -46,6 +48,17 @@ impl TargetResolver {
     pub fn expand_endpoint(endpoint: &Url, target: &str, current_version: &str) -> Result<Url> {
         let arch = Self::current_arch().unwrap_or("unknown");
         let bundle = Self::current_bundle_name().unwrap_or("");
+        Self::expand_endpoint_with_parts(endpoint, target, arch, bundle, current_version)
+    }
+
+    /// Expands endpoint template placeholders with explicit `arch` and `bundle` strings.
+    pub fn expand_endpoint_with_parts(
+        endpoint: &Url,
+        target: &str,
+        arch: &str,
+        bundle: &str,
+        current_version: &str,
+    ) -> Result<Url> {
         let encoded_version = utf8_percent_encode(current_version, QUERY_ENCODE_SET).to_string();
         let expanded = endpoint
             .as_str()
@@ -62,10 +75,15 @@ impl TargetResolver {
 
     /// Resolves the installation target path from the current executable path.
     pub fn extract_path_from_executable(executable_path: &Path) -> Result<PathBuf> {
-        #[cfg(target_os = "linux")]
+        #[cfg(all(target_os = "linux", feature = "plugin"))]
         if !matches!(bundle_type(), Some(BundleType::Deb | BundleType::Rpm))
             && let Some(appimage) = std::env::var_os("APPIMAGE")
         {
+            return Ok(PathBuf::from(appimage));
+        }
+
+        #[cfg(all(target_os = "linux", not(feature = "plugin")))]
+        if let Some(appimage) = std::env::var_os("APPIMAGE") {
             return Ok(PathBuf::from(appimage));
         }
 
@@ -85,19 +103,8 @@ impl TargetResolver {
         Ok(parent)
     }
 
-    fn current_os() -> Option<&'static str> {
-        if cfg!(target_os = "linux") {
-            Some("linux")
-        } else if cfg!(target_os = "macos") {
-            Some("darwin")
-        } else if cfg!(target_os = "windows") {
-            Some("windows")
-        } else {
-            None
-        }
-    }
-
-    fn current_arch() -> Option<&'static str> {
+    /// Returns the compiled host architecture name (e.g. `"x86_64"`, `"aarch64"`).
+    pub fn current_arch() -> Option<&'static str> {
         if cfg!(target_arch = "x86") {
             Some("i686")
         } else if cfg!(target_arch = "x86_64") {
@@ -113,15 +120,35 @@ impl TargetResolver {
         }
     }
 
-    fn current_bundle_name() -> Option<&'static str> {
-        match bundle_type()? {
-            BundleType::AppImage => Some("appimage"),
-            BundleType::Deb => Some("deb"),
-            BundleType::Rpm => Some("rpm"),
-            BundleType::App => Some("app"),
-            BundleType::Msi => Some("msi"),
-            BundleType::Nsis => Some("nsis"),
-            _ => None,
+    /// Returns the active Tauri bundle type identifier when compiled with the `plugin` feature.
+    pub fn current_bundle_name() -> Option<&'static str> {
+        #[cfg(feature = "plugin")]
+        {
+            match bundle_type()? {
+                BundleType::AppImage => Some("appimage"),
+                BundleType::Deb => Some("deb"),
+                BundleType::Rpm => Some("rpm"),
+                BundleType::App => Some("app"),
+                BundleType::Msi => Some("msi"),
+                BundleType::Nsis => Some("nsis"),
+                _ => None,
+            }
+        }
+        #[cfg(not(feature = "plugin"))]
+        {
+            None
+        }
+    }
+
+    fn current_os() -> Option<&'static str> {
+        if cfg!(target_os = "linux") {
+            Some("linux")
+        } else if cfg!(target_os = "macos") {
+            Some("darwin")
+        } else if cfg!(target_os = "windows") {
+            Some("windows")
+        } else {
+            None
         }
     }
 }

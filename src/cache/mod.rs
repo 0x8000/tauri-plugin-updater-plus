@@ -43,7 +43,7 @@ pub struct PackageCache {
 impl PackageCache {
     /// Creates a cache rooted at `directory`, falling back to `$APPIMAGE` when empty on Linux AppImage builds.
     pub fn new(directory: PathBuf) -> Self {
-        #[cfg(target_os = "linux")]
+        #[cfg(all(target_os = "linux", feature = "plugin"))]
         let fallback = if matches!(
             tauri::utils::platform::bundle_type(),
             Some(tauri::utils::config::BundleType::Deb | tauri::utils::config::BundleType::Rpm)
@@ -52,6 +52,8 @@ impl PackageCache {
         } else {
             std::env::var_os("APPIMAGE").map(PathBuf::from)
         };
+        #[cfg(all(target_os = "linux", not(feature = "plugin")))]
+        let fallback = std::env::var_os("APPIMAGE").map(PathBuf::from);
         #[cfg(not(target_os = "linux"))]
         let fallback = None;
         Self::with_appimage_fallback(directory, fallback)

@@ -59,6 +59,7 @@ def before_scenario(context, scenario) -> None:
     context.app = UpdaterAppDriver(context.stack.temp_dir / "app")
     context.nginx = {}
     context.cdn = {}
+    context.mqtt = {}
     context.last_gen_report = None
     context.last_manifest_path = None
     context.last_diff_report = None

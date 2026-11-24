@@ -1,25 +1,30 @@
 use std::path::PathBuf;
+#[cfg(feature = "http")]
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(feature = "http")]
 use http::{HeaderMap, HeaderName, HeaderValue};
 use semver::Version;
 use url::Url;
 
 use crate::cache::PackageCache;
 use crate::config::Config;
-use crate::manifest::ReleaseManifest;
+#[cfg(feature = "http")]
+use crate::downloader::TransferOptions;
+use crate::provider::{ResolveContext, ResolvedRelease, TransferOverrides, UpdateProvider};
 use crate::{Error, Result};
 
 mod target;
-#[cfg(test)]
+#[cfg(all(test, feature = "http"))]
 mod tests;
 mod update;
 
 pub use target::*;
 pub use update::*;
 
-/// Builder for configuring an [`Updater`] instance before checking endpoints.
+/// Builder for configuring an [`Updater`] instance backed by a default HTTP or custom [`UpdateProvider`].
 #[derive(Debug, Clone)]
 pub struct UpdaterBuilder {
     app_name: String,
@@ -27,10 +32,9 @@ pub struct UpdaterBuilder {
     extract_path: PathBuf,
     cache: PackageCache,
     config: Config,
+    provider: Option<Arc<dyn UpdateProvider>>,
     target: Option<String>,
-    headers: HeaderMap,
-    timeout: Option<Duration>,
-    proxy: Option<Url>,
+    overrides: TransferOverrides,
 }
 
 impl UpdaterBuilder {
@@ -47,10 +51,9 @@ impl UpdaterBuilder {
             extract_path,
             cache,
             config: Config::default(),
+            provider: None,
             target: None,
-            headers: HeaderMap::new(),
-            timeout: None,
-            proxy: None,
+            overrides: TransferOverrides::default(),
         }
     }
 
@@ -60,7 +63,14 @@ impl UpdaterBuilder {
         self
     }
 
-    /// Overrides the endpoint list from configuration.
+    /// Injects a custom [`UpdateProvider`] (e.g. `GitHubProvider`, `S3Provider`, `FailoverProvider`,
+    /// gRPC, or MQTT pull provider) instead of the default [`crate::StaticHttpProvider`].
+    pub fn provider(mut self, provider: Arc<dyn UpdateProvider>) -> Self {
+        self.provider = Some(provider);
+        self
+    }
+
+    /// Overrides the endpoint list from configuration (used by the default HTTP provider).
     pub fn endpoints(mut self, endpoints: Vec<Url>) -> Self {
         self.config.endpoints = endpoints;
         self
@@ -72,13 +82,24 @@ impl UpdaterBuilder {
         self
     }
 
+    /// Appends a protocol-agnostic transport metadata entry (HTTP header or gRPC metadata).
+    pub fn metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.overrides.push_metadata(key, value);
+        self
+    }
+
     /// Replaces all HTTP request headers sent to manifest and artifact endpoints.
+    #[cfg(feature = "http")]
     pub fn headers(mut self, headers: HeaderMap) -> Self {
-        self.headers = headers;
+        self.overrides.metadata = headers
+            .iter()
+            .filter_map(|(k, v)| Some((k.as_str().to_string(), v.to_str().ok()?.to_string())))
+            .collect();
         self
     }
 
     /// Appends an HTTP request header sent to manifest and artifact endpoints.
+    #[cfg(feature = "http")]
     pub fn header(mut self, key: &str, value: &str) -> Result<Self> {
         let name = HeaderName::from_str(key).map_err(|error| {
             Error::InvalidHeader(format!("invalid header name '{key}': {error}"))
@@ -86,29 +107,27 @@ impl UpdaterBuilder {
         let val = HeaderValue::from_str(value).map_err(|error| {
             Error::InvalidHeader(format!("invalid header value for '{key}': {error}"))
         })?;
-        self.headers.append(name, val);
+        let val_str = val.to_str().map_err(|error| {
+            Error::InvalidHeader(format!("header value for '{key}' is not UTF-8: {error}"))
+        })?;
+        self.overrides.push_metadata(name.as_str(), val_str);
         Ok(self)
     }
 
-    /// Sets the HTTP request timeout.
+    /// Sets the per-request transport timeout.
     pub fn timeout(mut self, timeout: Duration) -> Self {
-        self.timeout = Some(timeout);
+        self.overrides.timeout = Some(timeout);
         self
     }
 
     /// Routes HTTP requests through an explicit proxy URL.
     pub fn proxy(mut self, proxy: Url) -> Self {
-        self.proxy = Some(proxy);
+        self.overrides.proxy = Some(proxy);
         self
     }
 
     /// Builds a validated [`Updater`].
     pub fn build(self) -> Result<Updater> {
-        if self.config.endpoints.is_empty() {
-            return Err(Error::InvalidConfig(
-                "at least one updater endpoint must be configured".into(),
-            ));
-        }
         if !(0.0..=1.0).contains(&self.config.full_download_threshold) {
             return Err(Error::InvalidConfig(
                 "fullDownloadThreshold must be within 0.0..=1.0".into(),
@@ -123,39 +142,60 @@ impl UpdaterBuilder {
                 }
             }
         }
+
+        let provider: Arc<dyn UpdateProvider> = match self.provider {
+            Some(custom) => custom,
+            None => {
+                #[cfg(feature = "http")]
+                {
+                    if self.config.endpoints.is_empty() {
+                        return Err(Error::InvalidConfig(
+                            "at least one updater endpoint must be configured".into(),
+                        ));
+                    }
+                    let mut dl_builder = crate::provider::http::HttpDownloader::builder()
+                        .transfer_options(TransferOptions {
+                            max_ranges_per_request: self.config.max_ranges_per_request,
+                            use_multiple_range_request: self.config.use_multiple_range_request,
+                            max_concurrent_ranges: self.config.max_concurrent_ranges,
+                        });
+                    if let Some(timeout) = self.overrides.timeout {
+                        dl_builder = dl_builder.timeout(timeout);
+                    }
+                    if let Some(proxy) = &self.overrides.proxy {
+                        dl_builder = dl_builder.proxy(proxy.clone());
+                    }
+                    let downloader = dl_builder.build()?;
+                    let static_provider = crate::provider::http::StaticHttpProvider::new(
+                        downloader,
+                        self.config.endpoints.clone(),
+                    )?;
+                    Arc::new(static_provider)
+                }
+                #[cfg(not(feature = "http"))]
+                {
+                    return Err(Error::InvalidConfig(
+                        "custom UpdateProvider is required when the `http` feature is disabled"
+                            .into(),
+                    ));
+                }
+            }
+        };
+
         Ok(Updater {
             app_name: self.app_name,
             current_version: self.current_version,
             extract_path: self.extract_path,
             cache: self.cache,
             config: self.config,
+            provider,
             target: self.target,
-            headers: self.headers,
-            timeout: self.timeout,
-            proxy: self.proxy,
+            overrides: self.overrides,
         })
     }
 }
 
-pub(crate) fn build_http_client(
-    timeout: Option<Duration>,
-    proxy: Option<&Url>,
-) -> Result<reqwest::Client> {
-    let mut builder = reqwest::Client::builder().user_agent(concat!(
-        env!("CARGO_PKG_NAME"),
-        "/",
-        env!("CARGO_PKG_VERSION")
-    ));
-    if let Some(timeout) = timeout {
-        builder = builder.timeout(timeout);
-    }
-    if let Some(proxy_url) = proxy {
-        builder = builder.proxy(reqwest::Proxy::all(proxy_url.as_str())?);
-    }
-    Ok(builder.build()?)
-}
-
-/// Checks remote manifest endpoints and constructs downloadable [`Update`] handles.
+/// Checks remote providers for newer releases and constructs downloadable [`Update`] handles.
 #[derive(Debug, Clone)]
 pub struct Updater {
     app_name: String,
@@ -163,89 +203,70 @@ pub struct Updater {
     extract_path: PathBuf,
     cache: PackageCache,
     config: Config,
+    provider: Arc<dyn UpdateProvider>,
     target: Option<String>,
-    headers: HeaderMap,
-    timeout: Option<Duration>,
-    proxy: Option<Url>,
+    overrides: TransferOverrides,
 }
 
 impl Updater {
-    /// Checks configured endpoints in order and returns the first newer release found.
+    /// Checks the active [`UpdateProvider`] and returns a downloadable [`Update`] when newer.
     pub async fn check(&self) -> Result<Option<Update>> {
-        let client = build_http_client(self.timeout, self.proxy.as_ref())?;
         let candidates = TargetResolver::target_candidates(self.target.as_deref());
-        let primary_target = candidates
-            .first()
-            .cloned()
-            .unwrap_or_else(|| "unknown".to_string());
-        let current_ver_str = self.current_version.to_string();
+        let ctx = ResolveContext {
+            current_version: self.current_version.clone(),
+            target_candidates: candidates,
+            arch: TargetResolver::current_arch()
+                .unwrap_or("unknown")
+                .to_string(),
+            bundle_type: TargetResolver::current_bundle_name().map(ToString::to_string),
+            require_checksum: self.config.pubkey.is_none(),
+            overrides: self.overrides.clone(),
+        };
 
-        let mut last_error: Option<Error> = None;
-        for endpoint in &self.config.endpoints {
-            let attempt = async {
-                let expanded =
-                    TargetResolver::expand_endpoint(endpoint, &primary_target, &current_ver_str)?;
-                let Some(manifest) = self.fetch_manifest(&client, &expanded).await? else {
-                    return Ok(None);
-                };
-                if !self.should_install(&manifest.version) {
-                    return Ok(None);
-                }
-                let platform = manifest.resolve_platform(&candidates)?.clone();
-                if self.config.pubkey.is_none()
-                    && platform
-                        .sha512
-                        .as_deref()
-                        .is_none_or(|digest| digest.trim().is_empty())
-                {
-                    return Err(Error::InvalidManifest(
-                        "manifest platform must provide non-empty `sha512` when `pubkey` is not configured".into(),
-                    ));
-                }
-                let blockmap_url = platform.resolved_blockmap_url()?;
-                Ok::<_, Error>(Some((manifest, platform, blockmap_url)))
-            }
-            .await;
+        let Some(release) = self.provider.resolve_release(&ctx).await? else {
+            return Ok(None);
+        };
+        self.prepare_release(release)
+    }
 
-            match attempt {
-                Ok(None) => return Ok(None),
-                Ok(Some((manifest, platform, blockmap_url))) => {
-                    return Ok(Some(Update {
-                        current_version: current_ver_str,
-                        version: manifest.version.to_string(),
-                        date: manifest.formatted_pub_date(),
-                        body: manifest.notes.clone(),
-                        raw_json: manifest.raw_json.clone(),
-                        download_url: platform.url,
-                        blockmap_url,
-                        sha512: platform.sha512,
-                        signature: platform.signature,
-                        size: platform.size,
-                        app_name: self.app_name.clone(),
-                        extract_path: self.extract_path.clone(),
-                        cache: self.cache.clone(),
-                        headers: self.headers.clone(),
-                        timeout: self.timeout,
-                        proxy: self.proxy.clone(),
-                        config: self.config.clone(),
-                        restart_after_install: true,
-                    }));
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        endpoint = %endpoint,
-                        error = %error,
-                        "updater endpoint check failed"
-                    );
-                    last_error = Some(error);
-                }
-            }
+    /// Prepares a downloadable [`Update`] directly from a push-delivered [`ResolvedRelease`]
+    /// (for hybrid control planes such as MQTT/DDS/WebSocket notifications).
+    pub fn prepare_release(&self, release: ResolvedRelease) -> Result<Option<Update>> {
+        if !self.should_install(&release.version) {
+            return Ok(None);
+        }
+        if self.config.pubkey.is_none()
+            && release
+                .sha512
+                .as_deref()
+                .is_none_or(|digest| digest.trim().is_empty())
+        {
+            return Err(Error::InvalidManifest(
+                "manifest platform must provide non-empty `sha512` when `pubkey` is not configured"
+                    .into(),
+            ));
         }
 
-        match last_error {
-            Some(error) => Err(error),
-            None => Ok(None),
-        }
+        let date = release.formatted_pub_date();
+        Ok(Some(Update {
+            current_version: self.current_version.to_string(),
+            version: release.version.to_string(),
+            date,
+            body: release.notes,
+            raw_json: release.raw_json,
+            artifact: release.artifact,
+            blockmap: release.blockmap,
+            sha512: release.sha512,
+            signature: release.signature,
+            size: release.size,
+            provider: Arc::clone(&self.provider),
+            app_name: self.app_name.clone(),
+            extract_path: self.extract_path.clone(),
+            cache: self.cache.clone(),
+            overrides: self.overrides.clone(),
+            config: self.config.clone(),
+            restart_after_install: true,
+        }))
     }
 
     fn should_install(&self, remote: &Version) -> bool {
@@ -254,28 +275,5 @@ impl Updater {
         } else {
             remote > &self.current_version
         }
-    }
-
-    async fn fetch_manifest(
-        &self,
-        client: &reqwest::Client,
-        url: &Url,
-    ) -> Result<Option<ReleaseManifest>> {
-        let response = client
-            .get(url.clone())
-            .headers(self.headers.clone())
-            .send()
-            .await?;
-        if response.status() == http::StatusCode::NO_CONTENT {
-            return Ok(None);
-        }
-        if !response.status().is_success() {
-            return Err(Error::HttpStatus {
-                url: url.to_string(),
-                status: response.status().as_u16(),
-            });
-        }
-        let body = response.text().await?;
-        Ok(Some(ReleaseManifest::parse(&body, url)?))
     }
 }

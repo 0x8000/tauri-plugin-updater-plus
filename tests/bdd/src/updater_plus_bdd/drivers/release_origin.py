@@ -10,7 +10,7 @@ from pathlib import Path
 
 import requests
 
-from ..containers import CdnGatewayContainer, NginxReleaseContainer
+from ..containers import CdnGatewayContainer, MqttBrokerContainer, NginxReleaseContainer
 from .blockmap_cli import BlockmapCliDriver
 
 
@@ -92,6 +92,11 @@ class NginxReleaseDriver:
                 gz.write(chunk)
         target.chmod(0o644)
 
+    def remove_blockmap(self, artifact_filename: str) -> None:
+        target = self.container.releases_dir / f"{artifact_filename}.blockmap"
+        if target.exists():
+            target.unlink()
+
     def access_entries(self, uri_suffix: str | None = None) -> list[NginxAccessEntry]:
         log_file = self.container.logs_dir / "access.jsonl"
         if not log_file.is_file():
@@ -144,13 +149,19 @@ class CdnOriginDriver:
     def base_url(self) -> str:
         return self.gateway.origin_base_url
 
+    @property
+    def api_base_url(self) -> str:
+        return self.gateway.api_base_url
+
     def manifest_url(self, filename: str = "latest.json") -> str:
         return f"{self.base_url}{filename}"
 
-    def set_mode(self, mode: str, *, token_max_hits: int = 1) -> None:
+    def set_mode(self, mode: str, *, token_max_hits: int = 1, **extra: object) -> None:
+        payload: dict[str, object] = {"mode": mode, "token_max_hits": token_max_hits}
+        payload.update(extra)
         requests.post(
             f"{self.gateway.admin_base_url}/config",
-            json={"mode": mode, "token_max_hits": token_max_hits},
+            json=payload,
             timeout=5.0,
         ).raise_for_status()
 
@@ -183,7 +194,100 @@ class CdnOriginDriver:
         dest_manifest.chmod(0o644)
         return self.manifest_url(manifest_name)
 
+    def publish_github_private_release(
+        self,
+        *,
+        artifact_path: Path,
+        version: str,
+        manifest_name: str = "latest.json",
+        notes: str | None = None,
+    ) -> None:
+        dest_artifact = self.gateway.releases_dir / artifact_path.name
+        shutil.copy2(artifact_path, dest_artifact)
+        dest_artifact.chmod(0o644)
+
+        dest_blockmap = self.gateway.releases_dir / f"{artifact_path.name}.blockmap"
+        dest_manifest = self.gateway.releases_dir / manifest_name
+        # Mimics real GitHub release latest.json pointing at browser_download_url;
+        # GitHubProvider must remap both artifact and .blockmap to private API asset IDs.
+        browser_url = (
+            f"https://github.com/acme/myapp/releases/download/v{version}/{artifact_path.name}"
+        )
+        self.cli.manifest(
+            input_file=dest_artifact,
+            version=version,
+            url=browser_url,
+            output_file=dest_manifest,
+            manifest_format="tauri",
+            notes=notes,
+            blockmap_output=dest_blockmap,
+        )
+        dest_blockmap.chmod(0o644)
+        dest_manifest.chmod(0o644)
+        requests.post(
+            f"{self.gateway.admin_base_url}/config",
+            json={
+                "github_tag": f"v{version}",
+                "github_assets": {
+                    "101": manifest_name,
+                    "102": artifact_path.name,
+                    "103": f"{artifact_path.name}.blockmap",
+                },
+            },
+            timeout=5.0,
+        ).raise_for_status()
+
     def telemetry(self) -> dict:
         resp = requests.get(f"{self.gateway.admin_base_url}/telemetry", timeout=5.0)
+        resp.raise_for_status()
+        return dict(resp.json())
+
+
+class MqttBrokerDriver:
+    """Publishes releases to a real TCP MQTT v3.1.1 broker container and inspects telemetry."""
+
+    def __init__(self, broker: MqttBrokerContainer, cli: BlockmapCliDriver) -> None:
+        self.broker = broker
+        self.cli = cli
+
+    @property
+    def broker_addr(self) -> str:
+        return self.broker.broker_addr
+
+    def set_mode(self, mode: str) -> None:
+        requests.post(
+            f"{self.broker.admin_base_url}/config",
+            json={"mode": mode},
+            timeout=5.0,
+        ).raise_for_status()
+
+    def publish_release(
+        self, *, artifact_path: Path, version: str, notes: str | None = None
+    ) -> None:
+        dest_artifact = self.broker.releases_dir / artifact_path.name
+        shutil.copy2(artifact_path, dest_artifact)
+        dest_artifact.chmod(0o644)
+
+        dest_blockmap = self.broker.releases_dir / f"{artifact_path.name}.blockmap"
+        report = self.cli.generate(input_file=dest_artifact, output_file=dest_blockmap)
+        dest_blockmap.chmod(0o644)
+
+        requests.post(
+            f"{self.broker.admin_base_url}/config",
+            json={
+                "release": {
+                    "version": version,
+                    "notes": notes,
+                    "artifact": artifact_path.name,
+                    "blockmap": f"{artifact_path.name}.blockmap",
+                    "sha512": report.sha512,
+                    "size": report.size,
+                }
+            },
+            timeout=5.0,
+        ).raise_for_status()
+
+    def telemetry(self) -> dict:
+        resp = requests.get(f"{self.broker.admin_base_url}/telemetry", timeout=5.0)
         resp.raise_for_status()
         return dict(resp.json())

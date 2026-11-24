@@ -1,4 +1,7 @@
 #[cfg(feature = "plugin")]
+use std::sync::Arc;
+
+#[cfg(all(feature = "plugin", feature = "http"))]
 use http::HeaderMap;
 #[cfg(feature = "plugin")]
 use tauri::plugin::{Builder as PluginBuilder, TauriPlugin};
@@ -6,61 +9,83 @@ use tauri::plugin::{Builder as PluginBuilder, TauriPlugin};
 use tauri::{Manager, Runtime};
 
 mod blockmap;
-#[cfg(feature = "plugin")]
+#[cfg(feature = "engine")]
 mod cache;
 mod chunker;
 #[cfg(feature = "plugin")]
 mod commands;
-#[cfg(feature = "plugin")]
+#[cfg(feature = "engine")]
 mod config;
-#[cfg(feature = "plugin")]
+#[cfg(feature = "engine")]
 mod downloader;
 mod error;
-#[cfg(feature = "plugin")]
+#[cfg(feature = "engine")]
 mod installer;
-#[cfg(feature = "plugin")]
+#[cfg(feature = "engine")]
 mod listener;
 mod manifest;
-#[cfg(feature = "plugin")]
+#[cfg(feature = "engine")]
 mod multipart;
 mod planner;
-#[cfg(feature = "plugin")]
+#[cfg(feature = "engine")]
+mod provider;
+#[cfg(feature = "engine")]
+mod session;
+#[cfg(feature = "engine")]
 mod updater;
-#[cfg(feature = "plugin")]
+#[cfg(feature = "engine")]
 mod verifier;
 
 pub use blockmap::{BlockMap, BlockMapArtifact, BlockMapFile};
-#[cfg(feature = "plugin")]
+#[cfg(feature = "engine")]
 pub use cache::{CachedPackageState, LocalBasePackage, PackageCache};
 pub use chunker::{ChunkerConfig, FastCdc};
 #[cfg(feature = "plugin")]
 pub use commands::{CheckOptions, DownloadOptions, InstallOptions};
-#[cfg(feature = "plugin")]
+#[cfg(feature = "engine")]
 pub use config::{Config, WindowsConfig, WindowsInstallMode};
-#[cfg(feature = "plugin")]
-pub use downloader::{DifferentialDownloader, DownloadRequest, DownloadedPackage, TransferOptions};
-pub use error::{Error, Result};
-#[cfg(feature = "plugin")]
+#[cfg(feature = "http")]
+pub use downloader::DownloadRequest;
+#[cfg(feature = "engine")]
+pub use downloader::{DifferentialDownloader, ProviderDownloadRequest, TransferOptions};
+pub use error::{Error, Result, TransportError, TransportErrorKind};
+#[cfg(feature = "engine")]
 pub use installer::{
     AuthenticodePolicy, InstallContext, MacosCodeSignVerifier, MacosSigningRequirement,
     PlatformInstaller, WindowsAuthenticodeVerifier,
 };
-#[cfg(feature = "plugin")]
+#[cfg(feature = "engine")]
 pub use listener::{DownloadEvent, DownloadListener, DownloadMode, DownloadSummary, DummyListener};
 pub use manifest::{ReleaseManifest, ReleasePlatform, ReleasePlatforms};
-#[cfg(feature = "plugin")]
+#[cfg(feature = "engine")]
 pub use multipart::{ByteRangeParser, ByteRangePart};
-pub use planner::{DownloadPlan, PlanOperation, PlanOptions};
-#[cfg(feature = "plugin")]
+pub use planner::{ByteRange, DownloadPlan, PlanOperation, PlanOptions};
+#[cfg(feature = "http")]
+pub use provider::http::{
+    AwsCredentials, AwsCredentialsProvider, FnAuthorizer, FnCredentialsProvider, GitHubProvider,
+    GitHubProviderBuilder, HttpAuthorizer, HttpDownloadSession, HttpDownloader,
+    HttpDownloaderBuilder, HttpMiddleware, HttpNext, HttpRequest, HttpRequestContext, HttpResponse,
+    RequestStage, S3Provider, SigV4Authorizer, StaticAwsCredentials, StaticHttpProvider,
+};
+#[cfg(feature = "engine")]
+pub use provider::{
+    ArtifactId, BoxByteStream, BoxFuture, ByteStream, DownloadSession, FailoverProvider,
+    RangeCapability, RangeFetchResult, RangePart, ResolveContext, ResolvedRelease,
+    TransferCapabilities, TransferOverrides, TransferStats, UpdateProvider,
+};
+#[cfg(feature = "engine")]
+pub use session::{DiffPlanInfo, DiffSession, DownloadedPackage, FullSession};
+#[cfg(feature = "engine")]
 pub use updater::{TargetResolver, Update, Updater, UpdaterBuilder};
-#[cfg(feature = "plugin")]
-pub use verifier::{ArtifactVerifier, VerifyExpectation};
+#[cfg(feature = "engine")]
+pub use verifier::{ArtifactVerifier, VerifyExpectation, VerifyPolicy};
 
 #[cfg(feature = "plugin")]
 struct PluginState {
     config: Config,
+    provider: Option<Arc<dyn UpdateProvider>>,
     target: Option<String>,
-    headers: HeaderMap,
+    metadata: Vec<(String, String)>,
     cache: PackageCache,
 }
 
@@ -70,7 +95,7 @@ pub trait UpdaterPlusExt<R: Runtime> {
     /// Returns an [`UpdaterBuilder`] pre-populated with plugin config and cache state.
     fn updater_plus_builder(&self) -> Result<UpdaterBuilder>;
 
-    /// Builds an [`Updater`] ready to check configured endpoints.
+    /// Builds an [`Updater`] ready to check configured endpoints or custom provider.
     fn updater_plus(&self) -> Result<Updater>;
 
     /// Returns the plugin's [`PackageCache`] for seeding or inspecting cached base packages.
@@ -93,10 +118,15 @@ impl<R: Runtime, T: Manager<R>> UpdaterPlusExt<R> for T {
         )
         .config(state.config.clone());
 
+        if let Some(provider) = &state.provider {
+            builder = builder.provider(Arc::clone(provider));
+        }
         if let Some(target) = &state.target {
             builder = builder.target(target.clone());
         }
-        builder = builder.headers(state.headers.clone());
+        for (key, value) in &state.metadata {
+            builder = builder.metadata(key.clone(), value.clone());
+        }
         Ok(builder)
     }
 
@@ -113,9 +143,10 @@ impl<R: Runtime, T: Manager<R>> UpdaterPlusExt<R> for T {
 #[cfg(feature = "plugin")]
 #[derive(Default)]
 pub struct Builder {
+    provider: Option<Arc<dyn UpdateProvider>>,
     target: Option<String>,
     pubkey: Option<String>,
-    headers: HeaderMap,
+    metadata: Vec<(String, String)>,
 }
 
 #[cfg(feature = "plugin")]
@@ -123,6 +154,13 @@ impl Builder {
     /// Creates a plugin builder using defaults from `tauri.conf.json`.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Configures a custom [`UpdateProvider`] (e.g. `GitHubProvider`, `S3Provider`, `FailoverProvider`,
+    /// gRPC, or MQTT) to replace the default static HTTP provider.
+    pub fn provider(mut self, provider: Arc<dyn UpdateProvider>) -> Self {
+        self.provider = Some(provider);
+        self
     }
 
     /// Overrides the default target triple used for manifest lookup.
@@ -137,17 +175,28 @@ impl Builder {
         self
     }
 
+    /// Appends default transport metadata (HTTP header or gRPC metadata).
+    pub fn metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.metadata.push((key.into(), value.into()));
+        self
+    }
+
     /// Replaces the default HTTP headers sent with all updater requests.
+    #[cfg(feature = "http")]
     pub fn headers(mut self, headers: HeaderMap) -> Self {
-        self.headers = headers;
+        self.metadata = headers
+            .iter()
+            .filter_map(|(k, v)| Some((k.as_str().to_string(), v.to_str().ok()?.to_string())))
+            .collect();
         self
     }
 
     /// Builds the Tauri plugin with IPC commands for check, download, and install.
     pub fn build<R: Runtime>(self) -> TauriPlugin<R, Option<Config>> {
+        let provider = self.provider;
         let target = self.target;
         let pubkey = self.pubkey;
-        let headers = self.headers;
+        let metadata = self.metadata;
 
         PluginBuilder::<R, Option<Config>>::new("updater-plus")
             .setup(move |app, api| {
@@ -162,8 +211,9 @@ impl Builder {
                     .join("updater-plus");
                 app.manage(PluginState {
                     config,
+                    provider,
                     target,
-                    headers,
+                    metadata,
                     cache: PackageCache::new(cache_dir),
                 });
                 Ok(())

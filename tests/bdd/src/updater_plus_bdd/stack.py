@@ -11,7 +11,7 @@ from pathlib import Path
 from testcontainers.core.network import Network
 
 from .config import BDD_LABEL_KEY, BDD_SCENARIO_LABEL_KEY, image_name
-from .containers import CdnGatewayContainer, NginxReleaseContainer
+from .containers import CdnGatewayContainer, MqttBrokerContainer, NginxReleaseContainer
 from .images import ImageBuilder
 
 _ACTIVE_STACKS: list[ScenarioStack] = []
@@ -66,6 +66,7 @@ class ScenarioStack:
         self._network_started = False
         self._nginx_servers: dict[str, NginxReleaseContainer] = {}
         self._cdn_gateways: dict[str, CdnGatewayContainer] = {}
+        self._mqtt_brokers: dict[str, MqttBrokerContainer] = {}
 
     def _ensure_network(self) -> Network:
         if not self._network_started:
@@ -109,7 +110,30 @@ class ScenarioStack:
             self._cdn_gateways[name] = container
         return self._cdn_gateways[name]
 
+    def ensure_mqtt_broker(self, name: str = "primary") -> MqttBrokerContainer:
+        if name not in self._mqtt_brokers:
+            self.image_builder.ensure("mqtt-broker")
+            net = self._ensure_network()
+            releases_dir = self.temp_dir / f"mqtt-{name}-releases"
+            releases_dir.mkdir(parents=True, exist_ok=True)
+            releases_dir.chmod(0o755)
+            container = MqttBrokerContainer(
+                network=net,
+                releases_dir=releases_dir,
+                labels=self.labels,
+                alias=f"mqtt-{name}",
+            ).start()
+            self._mqtt_brokers[name] = container
+        return self._mqtt_brokers[name]
+
     def stop(self) -> None:
+        for broker in list(self._mqtt_brokers.values()):
+            try:
+                broker.stop()
+            except Exception:
+                pass
+        self._mqtt_brokers.clear()
+
         for container in list(self._nginx_servers.values()):
             try:
                 container.stop()

@@ -17,11 +17,13 @@ BUILD_HASH_LABEL = "updater-plus.bdd.buildhash"
 REBUILD_IMAGES = os.environ.get("UPDATER_PLUS_BDD_REBUILD_IMAGES", "0") == "1"
 FORCE_IMAGE_REBUILD = os.environ.get("UPDATER_PLUS_BDD_FORCE_IMAGE_REBUILD", "0") == "1"
 
-BDD_BUILT_SERVICES = ("nginx-release", "cdn-gateway")
+BDD_BUILT_SERVICES = ("nginx-release", "cdn-gateway", "mqtt-broker")
 
 NGINX_CONTAINER_PORT = 80
 CDN_ORIGIN_PORT = 8080
 CDN_ASSET_PORT = 8081
+MQTT_BROKER_PORT = 1883
+MQTT_ADMIN_PORT = 8082
 
 
 def image_name(service: str) -> str:

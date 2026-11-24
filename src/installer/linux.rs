@@ -5,7 +5,9 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use flate2::read::MultiGzDecoder;
+#[cfg(feature = "plugin")]
 use tauri::utils::config::BundleType;
+#[cfg(feature = "plugin")]
 use tauri::utils::platform::bundle_type;
 
 use super::InstallContext;
@@ -22,15 +24,21 @@ impl LinuxInstaller {
         if infer::archive::is_rpm(&header) {
             return Self::install_system_package(package_path, "rpm", "-U");
         }
+        #[cfg(feature = "plugin")]
         match bundle_type() {
-            Some(BundleType::Deb) => Err(Error::InvalidPackageFormat(
-                "expected a .deb package for deb installation".into(),
-            )),
-            Some(BundleType::Rpm) => Err(Error::InvalidPackageFormat(
-                "expected a .rpm package for rpm installation".into(),
-            )),
-            _ => Self::install_appimage(package_path, &header, &context.extract_path),
+            Some(BundleType::Deb) => {
+                return Err(Error::InvalidPackageFormat(
+                    "expected a .deb package for deb installation".into(),
+                ));
+            }
+            Some(BundleType::Rpm) => {
+                return Err(Error::InvalidPackageFormat(
+                    "expected a .rpm package for rpm installation".into(),
+                ));
+            }
+            _ => {}
         }
+        Self::install_appimage(package_path, &header, &context.extract_path)
     }
 
     pub(crate) fn install_appimage(

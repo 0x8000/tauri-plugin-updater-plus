@@ -57,6 +57,10 @@ jobs:
         run: |
           cargo test --no-default-features --features cli
 
+      - name: Cargo test (transport-agnostic engine only)
+        run: |
+          cargo test --no-default-features --features engine
+
       - name: Cargo test (all features)
         run: |
           cargo test --all-features
@@ -93,8 +97,8 @@ jobs:
 
       - name: Lint and unit-test BDD harness
         run: |
-          tests/bdd/.venv/bin/ruff check tests/bdd/features tests/bdd/scripts tests/bdd/src tests/bdd/tests tests/bdd/docker/cdn-gateway
-          tests/bdd/.venv/bin/ruff format --check tests/bdd/features tests/bdd/scripts tests/bdd/src tests/bdd/tests tests/bdd/docker/cdn-gateway
+          tests/bdd/.venv/bin/ruff check tests/bdd/features tests/bdd/scripts tests/bdd/src tests/bdd/tests tests/bdd/docker/cdn-gateway tests/bdd/docker/mqtt-broker
+          tests/bdd/.venv/bin/ruff format --check tests/bdd/features tests/bdd/scripts tests/bdd/src tests/bdd/tests tests/bdd/docker/cdn-gateway tests/bdd/docker/mqtt-broker
           PYTHONPATH=tests/bdd/src tests/bdd/.venv/bin/python -m unittest discover -s tests/bdd/tests -v
 
       - name: Build BDD Docker images
@@ -128,6 +132,10 @@ jobs:
       - name: Cargo clippy (all features)
         run: |
           cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Cargo clippy (engine only)
+        run: |
+          cargo clippy --no-default-features --features engine -- -D warnings
 
       - name: Cargo clippy (CLI only)
         run: |

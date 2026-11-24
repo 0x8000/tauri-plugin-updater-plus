@@ -64,6 +64,9 @@ pub struct Config {
     /// Maximum concurrent single-range HTTP requests when multi-range is unavailable or disabled.
     #[serde(default = "default_max_concurrent_ranges")]
     pub max_concurrent_ranges: usize,
+    /// Optional gap coalescing limit in bytes for merging nearby differential ranges (`None` uses provider hint).
+    #[serde(default)]
+    pub max_range_gap: Option<u64>,
     /// Optional Windows installer configuration.
     #[serde(default)]
     pub windows: Option<WindowsConfig>,
@@ -81,6 +84,7 @@ impl Default for Config {
             max_ranges_per_request: default_max_ranges_per_request(),
             use_multiple_range_request: None,
             max_concurrent_ranges: default_max_concurrent_ranges(),
+            max_range_gap: None,
             windows: None,
         }
     }

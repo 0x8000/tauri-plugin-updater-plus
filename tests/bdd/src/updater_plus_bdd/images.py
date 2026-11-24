@@ -20,11 +20,13 @@ from .config import (
 DOCKERFILES: dict[str, str] = {
     "nginx-release": "docker/nginx-release.Dockerfile",
     "cdn-gateway": "docker/cdn-gateway.Dockerfile",
+    "mqtt-broker": "docker/mqtt-broker.Dockerfile",
 }
 
 BUILD_INPUTS: dict[str, tuple[str, ...]] = {
     "nginx-release": ("tests/bdd/docker/nginx-release",),
     "cdn-gateway": ("tests/bdd/docker/cdn-gateway",),
+    "mqtt-broker": ("tests/bdd/docker/mqtt-broker",),
 }
 
 
