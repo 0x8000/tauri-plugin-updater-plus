@@ -24,6 +24,56 @@ use crate::Error;
 mod authenticode;
 mod codesign;
 
+#[test]
+fn android_installer_validates_apk_zip_magic_before_launching() {
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
+
+    use zip::ZipWriter;
+    use zip::write::SimpleFileOptions;
+
+    use super::{AndroidApkLauncher, AndroidInstaller};
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let valid_apk = dir.path().join("fastnet.apk");
+    {
+        let file = std::fs::File::create(&valid_apk).expect("create apk");
+        let mut writer = ZipWriter::new(file);
+        writer
+            .start_file("AndroidManifest.xml", SimpleFileOptions::default())
+            .expect("start entry");
+        writer.write_all(b"manifest-bytes").expect("write entry");
+        writer.finish().expect("finish zip");
+    }
+
+    let launched = Arc::new(Mutex::new(Vec::new()));
+    let launched_clone = Arc::clone(&launched);
+    let launcher = AndroidApkLauncher::new(move |path| {
+        launched_clone
+            .lock()
+            .expect("lock")
+            .push(path.to_path_buf());
+        Ok(())
+    });
+
+    AndroidInstaller::install_with_launcher(&valid_apk, &launcher).expect("valid apk installs");
+    assert_eq!(launched.lock().expect("lock").as_slice(), &[valid_apk]);
+
+    let invalid_apk = dir.path().join("not-an-apk.bin");
+    std::fs::write(&invalid_apk, b"plain-text-not-a-zip").expect("write invalid");
+    let err = AndroidInstaller::install_with_launcher(&invalid_apk, &launcher)
+        .expect_err("non-zip must fail");
+    assert!(matches!(
+        err,
+        crate::Error::InvalidPackageFormat(ref msg) if msg.contains(".apk")
+    ));
+    assert_eq!(
+        launched.lock().expect("lock").len(),
+        1,
+        "invalid package must not invoke Android launcher"
+    );
+}
+
 #[cfg(target_os = "linux")]
 fn sorted_dir_entries(dir: &Path) -> Vec<String> {
     let mut entries: Vec<String> = std::fs::read_dir(dir)

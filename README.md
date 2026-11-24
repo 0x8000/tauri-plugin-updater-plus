@@ -10,7 +10,7 @@ Differential in-app updates for Tauri v3 applications.
 | Linux    | ✓         |
 | Windows  | ✓         |
 | macOS    | ✓         |
-| Android  | x         |
+| Android  | ✓         |
 | iOS      | x         |
 
 ## Install
@@ -28,9 +28,9 @@ Install the core plugin by adding the following to your `Cargo.toml` file:
 `src-tauri/Cargo.toml`
 
 ```toml
-# you can add the dependency in the `[dependencies]` section if you do not target mobile
-[target."cfg(not(any(target_os = \"android\", target_os = \"ios\")))".dependencies]
-tauri-plugin-updater-plus = "0.3"
+# add to `[dependencies]` to target Linux, Windows, macOS, and Android
+[dependencies]
+tauri-plugin-updater-plus = "0.4"
 # alternatively with Git:
 tauri-plugin-updater-plus = { git = "https://github.com/0x8000/tauri-plugin-updater-plus", branch = "master" }
 ```
@@ -47,7 +47,7 @@ First, register the core plugin with Tauri:
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            #[cfg(desktop)]
+            #[cfg(not(target_os = "ios"))]
             app.handle()
                 .plugin(tauri_plugin_updater_plus::Builder::new().build())?;
             Ok(())
@@ -57,12 +57,15 @@ pub fn run() {
 }
 ```
 
-Configure update endpoints in `src-tauri/tauri.conf.json`:
+Configure update endpoints in `src-tauri/tauri.conf.json`. Use `plugins.updater` when `bundle.createUpdaterArtifacts` is enabled so Tauri CLI's updater bundling and `tauri-plugin-updater-plus` share a single configuration (`plugins.updater-plus` is also supported standalone or as an overlay on top of `plugins.updater`):
 
 ```json
 {
+  "bundle": {
+    "createUpdaterArtifacts": true
+  },
   "plugins": {
-    "updater-plus": {
+    "updater": {
       "pubkey": "<base64-minisign-public-key>",
       "differential": true,
       "endpoints": [
@@ -93,9 +96,12 @@ const update = await check()
 if (update) {
   await update.downloadAndInstall()
   // Relaunch the app on macOS and Linux to run the newly installed version
+  // (Android hands off to the system package installer instead of relaunching).
   await relaunch()
 }
 ```
+
+On Android, the plugin resolves `android-{arch}-apk`, `android-{arch}`, `android-universal`, and `android` manifest targets, uses the installed base APK as a differential blockmap cache fallback, and hands verified `.apk` packages to the system package installer via a dedicated `FileProvider` (requesting `REQUEST_INSTALL_PACKAGES` on Android 8+ when needed).
 
 ## Generating Release Artifacts (`blockmap-gen`)
 

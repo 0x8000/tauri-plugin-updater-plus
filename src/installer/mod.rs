@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use crate::Result;
 use crate::config::WindowsConfig;
 
+mod android;
 mod authenticode;
 mod codesign;
 #[cfg(target_os = "linux")]
@@ -16,6 +17,7 @@ mod unsupported;
 #[cfg(target_os = "windows")]
 mod windows;
 
+pub(crate) use android::{AndroidApkLauncher, AndroidInstaller};
 pub use authenticode::*;
 pub use codesign::*;
 
