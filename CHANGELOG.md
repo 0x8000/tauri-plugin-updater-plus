@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/0x8000/tauri-plugin-updater-plus/compare/v0.2.1...v0.3.0) (2026-11-24)
+
+
+### Features
+
+* **provider:** decouple transport engine with pluggable providers and mqtt bdd ([eb01232](https://github.com/0x8000/tauri-plugin-updater-plus/commit/eb012324c85f554039551948e157b69fd375e4fe))
+
 ## [0.2.1](https://github.com/0x8000/tauri-plugin-updater-plus/compare/v0.2.0...v0.2.1) (2026-11-24)
 
 
