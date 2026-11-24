@@ -18,6 +18,28 @@ mod tests;
 
 const BLOCKMAP_VERSION: &str = "2";
 const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
+const MAX_BLOCKMAP_JSON_BYTES: u64 = 64 * 1024 * 1024;
+
+struct CappedReader<'a, R> {
+    inner: R,
+    remaining: u64,
+    exceeded: &'a mut bool,
+}
+
+impl<R: Read> Read for CappedReader<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let count = self.inner.read(buf)?;
+        if count as u64 > self.remaining {
+            *self.exceeded = true;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "decompressed blockmap exceeds maximum size limit",
+            ));
+        }
+        self.remaining -= count as u64;
+        Ok(count)
+    }
+}
 
 /// Single file entry inside an Electron-compatible v2 blockmap.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,9 +156,27 @@ impl BlockMap {
     /// Decodes a gzip-compressed or raw JSON Electron v2 blockmap.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let parsed: Self = if bytes.starts_with(&GZIP_MAGIC) {
-            let decoder = GzDecoder::new(bytes);
-            serde_json::from_reader(decoder)?
+            let mut exceeded = false;
+            let reader = CappedReader {
+                inner: GzDecoder::new(bytes),
+                remaining: MAX_BLOCKMAP_JSON_BYTES,
+                exceeded: &mut exceeded,
+            };
+            match serde_json::from_reader(reader) {
+                Ok(map) => map,
+                Err(_) if exceeded => {
+                    return Err(Error::InvalidBlockMap(
+                        "decompressed blockmap exceeds 64 MiB limit".into(),
+                    ));
+                }
+                Err(error) => return Err(error.into()),
+            }
         } else {
+            if bytes.len() as u64 > MAX_BLOCKMAP_JSON_BYTES {
+                return Err(Error::InvalidBlockMap(
+                    "blockmap exceeds 64 MiB limit".into(),
+                ));
+            }
             serde_json::from_slice(bytes)?
         };
         parsed.validate()?;
@@ -156,7 +196,14 @@ impl BlockMap {
                 "blockmap contains no file entries".into(),
             ));
         }
+        let mut min_next_offset = 0u64;
         for file in &self.files {
+            if file.offset < min_next_offset {
+                return Err(Error::InvalidBlockMap(format!(
+                    "blockmap file '{}' offset {} overlaps previous entry end {}",
+                    file.name, file.offset, min_next_offset
+                )));
+            }
             if file.checksums.len() != file.sizes.len() {
                 return Err(Error::InvalidBlockMap(format!(
                     "blockmap file '{}' checksum/size length mismatch",
@@ -175,6 +222,7 @@ impl BlockMap {
                     Error::InvalidBlockMap("blockmap block offset overflow".into())
                 })?;
             }
+            min_next_offset = cursor;
         }
         Ok(())
     }

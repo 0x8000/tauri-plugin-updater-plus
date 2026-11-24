@@ -44,11 +44,11 @@ pub struct AuthenticodePolicy<'a> {
 pub struct WindowsAuthenticodeVerifier;
 
 impl WindowsAuthenticodeVerifier {
-    /// Resolves the absolute path to in-box Windows PowerShell 5.1 from `%SystemRoot%`.
-    pub fn windows_powershell_path(system_root: Option<&str>) -> Result<String> {
+    /// Resolves an absolute executable path inside `%SystemRoot%\System32`.
+    pub fn windows_system32_path(system_root: Option<&str>, sub_path: &str) -> Result<String> {
         let root = system_root.ok_or_else(|| {
             Error::Signature(
-                "cannot locate Windows PowerShell: SystemRoot environment variable is not set"
+                "cannot locate Windows System32 tool: SystemRoot environment variable is not set"
                     .into(),
             )
         })?;
@@ -57,14 +57,25 @@ impl WindowsAuthenticodeVerifier {
         // - `D:/Windows`
         if !regex_is_match!(r"^[a-zA-Z]:[\\/]", root) {
             return Err(Error::Signature(format!(
-                "cannot locate Windows PowerShell: SystemRoot is not an absolute path ({root})"
+                "cannot locate Windows System32 tool: SystemRoot is not an absolute path ({root})"
             )));
         }
         let trimmed = root.replace('/', "\\");
         let trimmed = trimmed.trim_end_matches('\\');
-        Ok(format!(
-            "{trimmed}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
-        ))
+        let clean_sub = sub_path.trim_start_matches('\\');
+        Ok(format!("{trimmed}\\System32\\{clean_sub}"))
+    }
+
+    /// Resolves the absolute path to in-box Windows PowerShell 5.1 from `%SystemRoot%`.
+    pub fn windows_powershell_path(system_root: Option<&str>) -> Result<String> {
+        Self::windows_system32_path(system_root, "WindowsPowerShell\\v1.0\\powershell.exe").map_err(
+            |error| match error {
+                Error::Signature(msg) => {
+                    Error::Signature(msg.replace("Windows System32 tool", "Windows PowerShell"))
+                }
+                other => other,
+            },
+        )
     }
 
     /// Builds PowerShell CLI arguments running `Get-AuthenticodeSignature` via UTF-16LE `-EncodedCommand`.

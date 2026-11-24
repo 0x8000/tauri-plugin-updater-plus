@@ -10,7 +10,15 @@ use super::{
 use crate::Error;
 use crate::verifier::{ArtifactVerifier, VerifyExpectation};
 
-const INVALID_SIG_MSG: &str = "minisign verification failed: The signature verification failed";
+fn is_minisign_verify_failure(err: &Error) -> bool {
+    matches!(
+        err,
+        Error::Signature(msg)
+            if msg.starts_with("minisign verification failed:")
+                && msg.to_ascii_lowercase().contains("verification failed")
+                && !msg.contains("different key")
+    )
+}
 
 const TEST_PUBKEY: &str = "untrusted comment: minisign public key E7620F1842B4E81F\n\
 RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3";
@@ -78,7 +86,7 @@ fn verifies_prehashed_minisign_and_sha512_in_single_streaming_pass() {
         },
     )
     .expect_err("matching SHA-512 with invalid signature must fail");
-    assert!(matches!(bad_sig, Error::Signature(ref msg) if msg == INVALID_SIG_MSG));
+    assert!(is_minisign_verify_failure(&bad_sig), "got {bad_sig:?}");
 }
 
 #[test]
@@ -142,7 +150,7 @@ fn verifies_file_minisign_and_rejects_tampered_wrong_key_or_unversioned() {
         },
     )
     .expect_err("tampered file must fail minisign verification");
-    assert!(matches!(tampered, Error::Signature(ref msg) if msg == INVALID_SIG_MSG));
+    assert!(is_minisign_verify_failure(&tampered), "got {tampered:?}");
 }
 
 #[test]
@@ -207,7 +215,7 @@ fn verifies_legacy_non_prehashed_minisign_via_fallback_and_enforces_checks() {
         },
     )
     .expect_err("tampered payload must fail legacy minisign verification");
-    assert!(matches!(tampered, Error::Signature(ref msg) if msg == INVALID_SIG_MSG));
+    assert!(is_minisign_verify_failure(&tampered), "got {tampered:?}");
 }
 
 #[test]

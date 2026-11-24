@@ -41,9 +41,20 @@ pub struct PackageCache {
 }
 
 impl PackageCache {
-    /// Creates a cache rooted at `directory`, falling back to `$APPIMAGE` when empty.
+    /// Creates a cache rooted at `directory`, falling back to `$APPIMAGE` when empty on Linux AppImage builds.
     pub fn new(directory: PathBuf) -> Self {
-        Self::with_appimage_fallback(directory, std::env::var_os("APPIMAGE").map(PathBuf::from))
+        #[cfg(target_os = "linux")]
+        let fallback = if matches!(
+            tauri::utils::platform::bundle_type(),
+            Some(tauri::utils::config::BundleType::Deb | tauri::utils::config::BundleType::Rpm)
+        ) {
+            None
+        } else {
+            std::env::var_os("APPIMAGE").map(PathBuf::from)
+        };
+        #[cfg(not(target_os = "linux"))]
+        let fallback = None;
+        Self::with_appimage_fallback(directory, fallback)
     }
 
     /// Creates a cache rooted at `directory` with an explicit optional AppImage fallback path.
@@ -74,34 +85,40 @@ impl PackageCache {
         blockmap: &BlockMap,
         state: &CachedPackageState,
     ) -> Result<PathBuf> {
+        use std::io::Write;
+
         let blockmap_bytes = blockmap.to_gzip_bytes()?;
         let state_bytes = serde_json::to_vec_pretty(state)?;
         std::fs::create_dir_all(&self.directory)?;
 
-        let staging_pkg = self.directory.join("staging.pkg");
-        scopeguard::defer! {
-            let _ = std::fs::remove_file(&staging_pkg);
-        }
+        let staging_pkg = tempfile::Builder::new()
+            .prefix(".staging-pkg-")
+            .tempfile_in(&self.directory)?
+            .into_temp_path();
         if std::fs::rename(package_file, &staging_pkg).is_err() {
             std::fs::copy(package_file, &staging_pkg)?;
         }
 
-        let staging_map = self.directory.join("staging.blockmap");
-        scopeguard::defer! {
-            let _ = std::fs::remove_file(&staging_map);
-        }
-        std::fs::write(&staging_map, blockmap_bytes)?;
+        let mut staging_map = tempfile::Builder::new()
+            .prefix(".staging-map-")
+            .tempfile_in(&self.directory)?;
+        staging_map.write_all(&blockmap_bytes)?;
+        staging_map.as_file().sync_all()?;
 
-        let staging_state = self.directory.join("staging.state.json");
-        scopeguard::defer! {
-            let _ = std::fs::remove_file(&staging_state);
-        }
-        std::fs::write(&staging_state, state_bytes)?;
+        let mut staging_state = tempfile::Builder::new()
+            .prefix(".staging-state-")
+            .tempfile_in(&self.directory)?;
+        staging_state.write_all(&state_bytes)?;
+        staging_state.as_file().sync_all()?;
 
         let target_pkg = self.directory.join(PACKAGE_FILENAME);
-        std::fs::rename(&staging_pkg, &target_pkg)?;
-        std::fs::rename(&staging_map, self.directory.join(BLOCKMAP_FILENAME))?;
-        std::fs::rename(&staging_state, self.directory.join(STATE_FILENAME))?;
+        staging_pkg.persist(&target_pkg).map_err(|e| e.error)?;
+        staging_map
+            .persist(self.directory.join(BLOCKMAP_FILENAME))
+            .map_err(|e| e.error)?;
+        staging_state
+            .persist(self.directory.join(STATE_FILENAME))
+            .map_err(|e| e.error)?;
 
         Ok(target_pkg)
     }
@@ -115,10 +132,10 @@ impl PackageCache {
             size: artifact.size,
             sha512: Some(artifact.sha512),
         };
-        let copy_staging = self.directory.join("seed.pkg");
-        scopeguard::defer! {
-            let _ = std::fs::remove_file(&copy_staging);
-        }
+        let copy_staging = tempfile::Builder::new()
+            .prefix(".seed-pkg-")
+            .tempfile_in(&self.directory)?
+            .into_temp_path();
         std::fs::copy(package_path, &copy_staging)?;
         let stored_path = self.commit(&copy_staging, &artifact.blockmap, &state)?;
         Ok(LocalBasePackage {

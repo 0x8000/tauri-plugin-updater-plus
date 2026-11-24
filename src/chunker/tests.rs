@@ -124,4 +124,31 @@ fn rejects_invalid_config_with_typed_error() {
         FastCdc::new(inverted_max),
         Err(Error::InvalidBlockMap(ref msg)) if msg.contains("min_size <= avg_size <= max_size")
     ));
+
+    assert!(matches!(
+        FastCdc::new(ChunkerConfig {
+            min_size: 1023,
+            avg_size: 1024,
+            max_size: 1024,
+        }),
+        Err(Error::InvalidBlockMap(ref msg)) if msg.contains("at least 1024")
+    ));
+
+    let fixed = FastCdc::new(ChunkerConfig {
+        min_size: 1024,
+        avg_size: 1024,
+        max_size: 1024,
+    })
+    .expect("exact 1024 fixed-size boundary is valid");
+    assert_eq!(fixed.next_chunk_len(&[0xabu8; 2500]), 1024);
+
+    #[cfg(target_pointer_width = "64")]
+    assert!(matches!(
+        FastCdc::new(ChunkerConfig {
+            min_size: 1024,
+            avg_size: 4096,
+            max_size: (u32::MAX as usize) + 1,
+        }),
+        Err(Error::InvalidBlockMap(ref msg)) if msg.contains("exceeds u32")
+    ));
 }

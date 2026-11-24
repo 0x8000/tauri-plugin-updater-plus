@@ -98,9 +98,17 @@ async fn degrades_gracefully_from_multipart_to_single_range_and_splits_batches()
     assert!(state.bytes_sent.load(Ordering::SeqCst) < v2.len() / 3);
     assert_eq!(std::fs::read(&result.path).expect("read"), v2);
 
+    // Mutate 5 well-separated spans so `max_ranges_per_request: 2` produces two 2-range
+    // `multipart/byteranges` batches followed by one trailing 1-range single request (`with_prior`).
+    let mut v2_multi = v1.clone();
+    for offset in [80_000usize, 320_000, 560_000, 800_000, 1_040_000] {
+        v2_multi[offset..offset + 2048].fill((offset / 10_000) as u8);
+    }
+    let v2_multi_art =
+        BlockMap::generate(v2_multi.as_slice(), "file", ChunkerConfig::default()).expect("map");
     let batch_state = MockServerState::new(
-        v2.clone(),
-        Some(v2_artifact.blockmap.to_gzip_bytes().expect("gz")),
+        v2_multi.clone(),
+        Some(v2_multi_art.blockmap.to_gzip_bytes().expect("gz")),
         ServerRangeMode::MultipartAndSingle,
     );
     let batch_url = spawn_server(batch_state.clone()).await;
@@ -111,18 +119,29 @@ async fn degrades_gracefully_from_multipart_to_single_range_and_splits_batches()
         HeaderMap::new(),
         cache2,
         TransferOptions {
-            max_ranges_per_request: 1,
+            max_ranges_per_request: 2,
             ..TransferOptions::default()
         },
     );
-    let batch_req = make_request(&batch_url, v2.len() as u64, Some(v2_artifact.sha512));
+    let batch_req = make_request(&batch_url, v2_multi.len() as u64, Some(v2_multi_art.sha512));
     let res = batched_dl
         .download(&batch_req, &DummyListener)
         .await
-        .expect("1-range-per-batch download");
+        .expect("multi-batch multipart + trailing single-range download");
     assert_eq!(res.summary.mode, DownloadMode::Differential);
-    assert!(batch_state.requests.load(Ordering::SeqCst) >= 2);
-    assert_eq!(std::fs::read(&res.path).expect("read"), v2);
+    assert_eq!(batch_state.requests.load(Ordering::SeqCst), 3);
+    assert_eq!(res.summary.http_requests, 3);
+    {
+        let seen = batch_state.received_ranges.lock().expect("lock");
+        let multi_count = seen.iter().flatten().filter(|h| h.contains(',')).count();
+        let single_count = seen.iter().flatten().filter(|h| !h.contains(',')).count();
+        assert_eq!(multi_count, 2, "expected 2 multipart batches, got {seen:?}");
+        assert_eq!(
+            single_count, 1,
+            "expected 1 trailing single range, got {seen:?}"
+        );
+    }
+    assert_eq!(std::fs::read(&res.path).expect("read"), v2_multi);
 }
 
 #[tokio::test]

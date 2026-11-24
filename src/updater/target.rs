@@ -62,7 +62,10 @@ impl TargetResolver {
 
     /// Resolves the installation target path from the current executable path.
     pub fn extract_path_from_executable(executable_path: &Path) -> Result<PathBuf> {
-        if let Some(appimage) = std::env::var_os("APPIMAGE") {
+        #[cfg(target_os = "linux")]
+        if !matches!(bundle_type(), Some(BundleType::Deb | BundleType::Rpm))
+            && let Some(appimage) = std::env::var_os("APPIMAGE")
+        {
             return Ok(PathBuf::from(appimage));
         }
 

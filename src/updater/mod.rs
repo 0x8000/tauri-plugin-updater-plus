@@ -72,6 +72,12 @@ impl UpdaterBuilder {
         self
     }
 
+    /// Replaces all HTTP request headers sent to manifest and artifact endpoints.
+    pub fn headers(mut self, headers: HeaderMap) -> Self {
+        self.headers = headers;
+        self
+    }
+
     /// Appends an HTTP request header sent to manifest and artifact endpoints.
     pub fn header(mut self, key: &str, value: &str) -> Result<Self> {
         let name = HeaderName::from_str(key).map_err(|error| {
@@ -103,6 +109,20 @@ impl UpdaterBuilder {
                 "at least one updater endpoint must be configured".into(),
             ));
         }
+        if !(0.0..=1.0).contains(&self.config.full_download_threshold) {
+            return Err(Error::InvalidConfig(
+                "fullDownloadThreshold must be within 0.0..=1.0".into(),
+            ));
+        }
+        if let Some(windows) = &self.config.windows {
+            for dn in &windows.publisher_name {
+                if !crate::installer::WindowsAuthenticodeVerifier::is_valid_publisher_name_dn(dn) {
+                    return Err(Error::InvalidConfig(format!(
+                        "invalid Windows publisherName Distinguished Name: '{dn}'"
+                    )));
+                }
+            }
+        }
         Ok(Updater {
             app_name: self.app_name,
             current_version: self.current_version,
@@ -115,6 +135,24 @@ impl UpdaterBuilder {
             proxy: self.proxy,
         })
     }
+}
+
+pub(crate) fn build_http_client(
+    timeout: Option<Duration>,
+    proxy: Option<&Url>,
+) -> Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder().user_agent(concat!(
+        env!("CARGO_PKG_NAME"),
+        "/",
+        env!("CARGO_PKG_VERSION")
+    ));
+    if let Some(timeout) = timeout {
+        builder = builder.timeout(timeout);
+    }
+    if let Some(proxy_url) = proxy {
+        builder = builder.proxy(reqwest::Proxy::all(proxy_url.as_str())?);
+    }
+    Ok(builder.build()?)
 }
 
 /// Checks remote manifest endpoints and constructs downloadable [`Update`] handles.
@@ -134,7 +172,7 @@ pub struct Updater {
 impl Updater {
     /// Checks configured endpoints in order and returns the first newer release found.
     pub async fn check(&self) -> Result<Option<Update>> {
-        let client = self.build_client()?;
+        let client = build_http_client(self.timeout, self.proxy.as_ref())?;
         let candidates = TargetResolver::target_candidates(self.target.as_deref());
         let primary_target = candidates
             .first()
@@ -144,26 +182,44 @@ impl Updater {
 
         let mut last_error: Option<Error> = None;
         for endpoint in &self.config.endpoints {
-            let expanded =
-                TargetResolver::expand_endpoint(endpoint, &primary_target, &current_ver_str)?;
-            match self.fetch_manifest(&client, &expanded).await {
+            let attempt = async {
+                let expanded =
+                    TargetResolver::expand_endpoint(endpoint, &primary_target, &current_ver_str)?;
+                let Some(manifest) = self.fetch_manifest(&client, &expanded).await? else {
+                    return Ok(None);
+                };
+                if !self.should_install(&manifest.version) {
+                    return Ok(None);
+                }
+                let platform = manifest.resolve_platform(&candidates)?.clone();
+                if self.config.pubkey.is_none()
+                    && platform
+                        .sha512
+                        .as_deref()
+                        .is_none_or(|digest| digest.trim().is_empty())
+                {
+                    return Err(Error::InvalidManifest(
+                        "manifest platform must provide non-empty `sha512` when `pubkey` is not configured".into(),
+                    ));
+                }
+                let blockmap_url = platform.resolved_blockmap_url()?;
+                Ok::<_, Error>(Some((manifest, platform, blockmap_url)))
+            }
+            .await;
+
+            match attempt {
                 Ok(None) => return Ok(None),
-                Ok(Some(manifest)) => {
-                    if !self.should_install(&manifest.version) {
-                        return Ok(None);
-                    }
-                    let platform = manifest.resolve_platform(&candidates)?;
-                    let blockmap_url = platform.resolved_blockmap_url()?;
+                Ok(Some((manifest, platform, blockmap_url))) => {
                     return Ok(Some(Update {
                         current_version: current_ver_str,
                         version: manifest.version.to_string(),
                         date: manifest.formatted_pub_date(),
                         body: manifest.notes.clone(),
                         raw_json: manifest.raw_json.clone(),
-                        download_url: platform.url.clone(),
+                        download_url: platform.url,
                         blockmap_url,
-                        sha512: platform.sha512.clone(),
-                        signature: platform.signature.clone(),
+                        sha512: platform.sha512,
+                        signature: platform.signature,
                         size: platform.size,
                         app_name: self.app_name.clone(),
                         extract_path: self.extract_path.clone(),
@@ -176,7 +232,11 @@ impl Updater {
                     }));
                 }
                 Err(error) => {
-                    tracing::warn!(endpoint = %expanded, error = %error, "updater endpoint check failed");
+                    tracing::warn!(
+                        endpoint = %endpoint,
+                        error = %error,
+                        "updater endpoint check failed"
+                    );
                     last_error = Some(error);
                 }
             }
@@ -217,20 +277,5 @@ impl Updater {
         }
         let body = response.text().await?;
         Ok(Some(ReleaseManifest::parse(&body, url)?))
-    }
-
-    fn build_client(&self) -> Result<reqwest::Client> {
-        let mut builder = reqwest::Client::builder().user_agent(concat!(
-            env!("CARGO_PKG_NAME"),
-            "/",
-            env!("CARGO_PKG_VERSION")
-        ));
-        if let Some(timeout) = self.timeout {
-            builder = builder.timeout(timeout);
-        }
-        if let Some(proxy_url) = &self.proxy {
-            builder = builder.proxy(reqwest::Proxy::all(proxy_url.as_str())?);
-        }
-        Ok(builder.build()?)
     }
 }

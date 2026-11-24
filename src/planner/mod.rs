@@ -58,8 +58,14 @@ impl DownloadPlan {
         let mut reused_bytes = 0u64;
         let mut download_bytes = 0u64;
         let mut last_old_end = 0u64;
+        let mut expected_new_offset = 0u64;
 
         for file in &new_map.files {
+            if file.offset > expected_new_offset {
+                let gap = file.offset - expected_new_offset;
+                Self::push_download(&mut operations, expected_new_offset, gap);
+                download_bytes = download_bytes.saturating_add(gap);
+            }
             let mut new_cursor = file.offset;
             for (checksum, &size) in file.checksums.iter().zip(&file.sizes) {
                 let len = u64::from(size);
@@ -74,6 +80,7 @@ impl DownloadPlan {
                 }
                 new_cursor = new_cursor.saturating_add(len);
             }
+            expected_new_offset = new_cursor;
         }
 
         if options.max_range_gap > 0 {

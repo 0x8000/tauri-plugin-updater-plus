@@ -96,11 +96,7 @@ impl<R: Runtime, T: Manager<R>> UpdaterPlusExt<R> for T {
         if let Some(target) = &state.target {
             builder = builder.target(target.clone());
         }
-        for (key, value) in &state.headers {
-            if let Ok(val) = value.to_str() {
-                builder = builder.header(key.as_str(), val)?;
-            }
-        }
+        builder = builder.headers(state.headers.clone());
         Ok(builder)
     }
 

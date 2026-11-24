@@ -6,6 +6,7 @@ use super::{ArtifactVerifier, VerifyExpectation};
 use crate::Error;
 
 mod minisign;
+mod signed_version;
 
 const KNOWN_PAYLOAD: &[u8] = b"updater-plus blockmap payload";
 // Standard base64 SHA-512 digests computed independently of ArtifactVerifier.
@@ -145,10 +146,25 @@ fn verifies_file_sha512_empty_large_and_noop_expectations() {
 
     let large: Vec<u8> = (0..600 * 1024).map(|i| (i % 251) as u8).collect();
     std::fs::write(file.path(), &large).expect("write large");
+    let expected_large_sha512 = {
+        use aws_lc_rs::digest;
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD
+            .encode(digest::digest(&digest::SHA512, &large).as_ref())
+    };
     assert_eq!(
         ArtifactVerifier::sha512_file(file.path()).expect("stream hash"),
-        ArtifactVerifier::sha512_bytes(&large)
+        expected_large_sha512
     );
+    ArtifactVerifier::verify_file(
+        file.path(),
+        &VerifyExpectation {
+            sha512: Some(expected_large_sha512),
+            announced_version: "0.2.0".into(),
+            ..Default::default()
+        },
+    )
+    .expect("multi-buffer file SHA-512 verifies");
 
     // No-op expectation skips touching both reader and filesystem.
     let stats = Rc::new(ReadStats::default());

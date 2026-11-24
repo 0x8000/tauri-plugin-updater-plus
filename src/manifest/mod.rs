@@ -175,12 +175,25 @@ impl ReleaseManifest {
         if let Some(blockmap_size) = platform.blockmap_size {
             lines.push(format!("    blockMapSize: {blockmap_size}"));
         }
+        if let Some(blockmap_url) = &platform.blockmap_url {
+            let escaped_map = blockmap_url.as_str().replace('\'', "''");
+            lines.push(format!("    blockMapUrl: '{escaped_map}'"));
+        }
         lines.push(format!("path: {file_ref}"));
         lines.push(format!("sha512: {sha512}"));
         lines.push(format!("releaseDate: '{release_date}'"));
         if let Some(notes) = &self.notes {
-            let escaped = notes.replace('\'', "''");
-            lines.push(format!("releaseNotes: '{escaped}'"));
+            if notes.contains(['\n', '\r']) {
+                let escaped = notes
+                    .replace('\\', "\\\\")
+                    .replace('"', "\\\"")
+                    .replace('\n', "\\n")
+                    .replace('\r', "\\r");
+                lines.push(format!("releaseNotes: \"{escaped}\""));
+            } else {
+                let escaped = notes.replace('\'', "''");
+                lines.push(format!("releaseNotes: '{escaped}'"));
+            }
         }
         lines.push(String::new());
         Ok(lines.join("\n"))

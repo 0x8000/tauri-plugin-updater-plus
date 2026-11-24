@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
 
-use http::{HeaderMap, HeaderName, HeaderValue};
+use http::{HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 use tauri::{Manager, Resource, ResourceId, Runtime, Webview};
@@ -66,7 +66,10 @@ pub(crate) struct DownloadResult {
     summary: DownloadSummary,
 }
 
-struct DownloadedPackageResource(PathBuf);
+struct DownloadedPackageResource {
+    path: PathBuf,
+    restart_after_install: Option<bool>,
+}
 impl Resource for DownloadedPackageResource {}
 
 struct ChannelListener {
@@ -119,9 +122,9 @@ pub(crate) async fn check<R: Runtime>(
 }
 
 impl DownloadOptions {
-    fn apply_to(self, mut update: Update) -> Result<Update> {
+    fn apply_to(self, mut update: Update) -> Result<(Update, Option<bool>)> {
         if let Some(headers) = self.headers {
-            let mut map = HeaderMap::new();
+            let mut map = update.headers.clone();
             for (key, value) in headers {
                 let name = HeaderName::from_str(&key).map_err(|error| {
                     Error::InvalidHeader(format!("invalid header name '{key}': {error}"))
@@ -129,7 +132,7 @@ impl DownloadOptions {
                 let val = HeaderValue::from_str(&value).map_err(|error| {
                     Error::InvalidHeader(format!("invalid header value for '{key}': {error}"))
                 })?;
-                map.append(name, val);
+                map.insert(name, val);
             }
             update = update.with_headers(map);
         }
@@ -139,7 +142,7 @@ impl DownloadOptions {
         if let Some(restart) = self.restart_after_install {
             update = update.restart_after_install(restart);
         }
-        Ok(update)
+        Ok((update, self.restart_after_install))
     }
 }
 
@@ -151,15 +154,16 @@ pub(crate) async fn download<R: Runtime>(
     options: Option<DownloadOptions>,
 ) -> Result<DownloadResult> {
     let base = (*webview.resources_table().get::<Update>(rid)?).clone();
-    let update = match options {
+    let (update, restart_override) = match options {
         Some(opts) => opts.apply_to(base)?,
-        None => base,
+        None => (base, None),
     };
     let listener = ChannelListener { channel: on_event };
     let downloaded = update.download(&listener).await?;
-    let pkg_rid = webview
-        .resources_table()
-        .add(DownloadedPackageResource(downloaded.path));
+    let pkg_rid = webview.resources_table().add(DownloadedPackageResource {
+        path: downloaded.path,
+        restart_after_install: restart_override,
+    });
     Ok(DownloadResult {
         rid: pkg_rid,
         summary: downloaded.summary,
@@ -177,10 +181,17 @@ pub(crate) async fn install<R: Runtime>(
     let package = webview
         .resources_table()
         .get::<DownloadedPackageResource>(package_rid)?;
-    if let Some(restart) = options.and_then(|o| o.restart_after_install) {
+    let restart_choice = options
+        .and_then(|o| o.restart_after_install)
+        .or(package.restart_after_install);
+    if let Some(restart) = restart_choice {
         update = update.restart_after_install(restart);
     }
-    update.install_file(&package.0)?;
+    let package_path = package.path.clone();
+    drop(package);
+    tokio::task::spawn_blocking(move || update.install_file(&package_path))
+        .await
+        .map_err(|err| Error::Io(std::io::Error::other(err.to_string())))??;
     let _ = webview.resources_table().close(package_rid);
     Ok(())
 }
@@ -193,9 +204,9 @@ pub(crate) async fn download_and_install<R: Runtime>(
     options: Option<DownloadOptions>,
 ) -> Result<DownloadSummary> {
     let base = (*webview.resources_table().get::<Update>(rid)?).clone();
-    let update = match options {
+    let (update, _) = match options {
         Some(opts) => opts.apply_to(base)?,
-        None => base,
+        None => (base, None),
     };
     let listener = ChannelListener { channel: on_event };
     update.download_and_install(&listener).await

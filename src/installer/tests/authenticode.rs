@@ -18,6 +18,12 @@ fn resolves_absolute_powershell_path_and_rejects_missing_or_relative_system_root
         r"D:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
     );
 
+    assert_eq!(
+        WindowsAuthenticodeVerifier::windows_system32_path(Some(r"C:\Windows"), "msiexec.exe")
+            .expect("valid msiexec path"),
+        r"C:\Windows\System32\msiexec.exe"
+    );
+
     assert!(matches!(
         WindowsAuthenticodeVerifier::windows_powershell_path(None),
         Err(Error::Signature(ref msg)) if msg.contains("SystemRoot environment variable is not set")
@@ -115,6 +121,27 @@ fn parses_rfc2253_dn_and_matches_publisher_names_strictly() {
     assert!(!WindowsAuthenticodeVerifier::match_publisher_name(
         subject,
         &[]
+    ));
+
+    // Multi-valued RDN attributes (multiple OU= / DC=) must preserve every component in order
+    // instead of letting later attributes overwrite earlier ones.
+    let multi_rdn_subject =
+        "CN=Acme Updater, OU=Engineering, OU=ReleaseSigning, DC=corp, DC=acme, DC=com";
+    assert!(WindowsAuthenticodeVerifier::match_publisher_name(
+        multi_rdn_subject,
+        &["CN=Acme Updater, OU=Engineering, OU=ReleaseSigning, DC=corp, DC=acme, DC=com".into(),],
+    ));
+    assert!(WindowsAuthenticodeVerifier::match_publisher_name(
+        multi_rdn_subject,
+        &["CN=Acme Updater, OU=ReleaseSigning, DC=acme, DC=com".into()],
+    ));
+    assert!(!WindowsAuthenticodeVerifier::match_publisher_name(
+        "CN=Acme Updater, OU=UntrustedContractor, OU=ReleaseSigning, DC=attacker, DC=com",
+        &["CN=Acme Updater, OU=Engineering, OU=ReleaseSigning, DC=acme, DC=com".into()],
+    ));
+    assert!(!WindowsAuthenticodeVerifier::match_publisher_name(
+        multi_rdn_subject,
+        &["CN=Acme Updater, DC=com, DC=acme".into()],
     ));
 }
 
@@ -296,6 +323,14 @@ fn deserializes_windows_config_publisher_name_and_rejects_invalid_types() {
     let omitted: WindowsConfig = serde_json::from_str("{}").expect("omitted");
     assert!(omitted.publisher_name.is_empty());
 
-    assert!(serde_json::from_str::<WindowsConfig>(r#"{"publisherName": 123}"#).is_err());
-    assert!(serde_json::from_str::<WindowsConfig>(r#"{"publisherName": [123]}"#).is_err());
+    assert!(
+        serde_json::from_str::<WindowsConfig>(r#"{"publisherName": 123}"#)
+            .expect_err("integer publisherName must fail")
+            .is_data()
+    );
+    assert!(
+        serde_json::from_str::<WindowsConfig>(r#"{"publisherName": [123]}"#)
+            .expect_err("integer array element in publisherName must fail")
+            .is_data()
+    );
 }
