@@ -29,7 +29,7 @@ pub type BoxByteStream = Pin<Box<dyn Stream<Item = Result<Bytes>> + Send + 'stat
 
 /// Opaque protocol-agnostic identifier pointing to a remote artifact or blockmap.
 ///
-/// [`Display`] redacts URL query strings so presigned S3/CDN tokens are never leaked into logs.
+/// [`fmt::Display`] redacts URL query strings so presigned S3/CDN tokens are never leaked into logs.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ArtifactId {
     raw: String,

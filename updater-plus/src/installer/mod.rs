@@ -49,10 +49,10 @@ pub struct InstallContext {
 
 /// Pluggable installation strategy that applies a downloaded and verified update package.
 ///
-/// Built-in implementations include [`PlatformInstaller`] (OS-native desktop/Android facade under
+/// Built-in implementations include `PlatformInstaller` (OS-native desktop/Android facade under
 /// the `native-installer` feature) and [`UnsupportedInstaller`]. Custom hot-update flows (such as
 /// versioned web bundles or Lua scripts) can implement this trait and pass it to
-/// [`crate::UpdaterBuilder::installer`].
+/// `UpdaterBuilder::installer`.
 pub trait UpdateInstaller: Send + Sync + fmt::Debug {
     /// Applies the verified package at `package_path` using `context`.
     fn install(&self, package_path: &Path, context: &InstallContext) -> Result<()>;
@@ -148,6 +148,7 @@ impl UpdateInstaller for PlatformInstaller {
     }
 }
 
+#[cfg(feature = "engine")]
 pub(crate) fn default_installer() -> std::sync::Arc<dyn UpdateInstaller> {
     #[cfg(feature = "native-installer")]
     {

@@ -23,7 +23,7 @@ pub enum TransportErrorKind {
     Other,
 }
 
-/// Protocol-agnostic transport error returned by custom [`crate::UpdateProvider`] implementations.
+/// Protocol-agnostic transport error returned by custom `UpdateProvider` implementations.
 #[derive(Debug)]
 pub struct TransportError {
     /// High-level semantic classification of the failure.
