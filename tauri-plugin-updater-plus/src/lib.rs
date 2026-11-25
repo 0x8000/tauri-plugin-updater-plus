@@ -1,3 +1,9 @@
+//! Differential in-app updater plugin for Tauri v3 applications, powered by [`updater_plus`].
+//!
+//! # Feature flags
+//!
+#![doc = document_features::document_features!()]
+
 use std::sync::Arc;
 
 #[cfg(feature = "http")]

@@ -65,6 +65,10 @@ jobs:
         run: |
           cargo test -p updater-plus --no-default-features --features http
 
+      - name: Cargo test (native installers standalone without engine)
+        run: |
+          cargo test -p updater-plus --no-default-features --features native-installer
+
       - name: Cargo test (workspace all features)
         run: |
           cargo test --workspace --all-features
@@ -144,6 +148,10 @@ jobs:
       - name: Cargo clippy (HTTP engine without native installers)
         run: |
           cargo clippy -p updater-plus --no-default-features --features http -- -D warnings
+
+      - name: Cargo clippy (native installers standalone without engine)
+        run: |
+          cargo clippy -p updater-plus --no-default-features --features native-installer -- -D warnings
 
       - name: Cargo clippy (CLI only)
         run: |

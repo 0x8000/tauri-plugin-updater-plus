@@ -11,8 +11,20 @@ homepage.workspace = true
 keywords = ["updater", "blockmap", "differential", "hot-update", "fastcdc"]
 categories = ["development-tools", "network-programming"]
 
+[package.metadata.docs.rs]
+all-features = true
+
 [features]
+## Enables the built-in HTTP providers (`http`) and OS-native installers (`native-installer`).
 default = ["http", "native-installer"]
+
+#! ### Update Engine & Transport
+
+## Transport-agnostic async differential update engine (`Updater`, `DifferentialDownloader`,
+## `PackageCache`, `ArtifactVerifier`, `UpdateProvider`, and `UpdateInstaller`).
+##
+## Does not pull in `reqwest` or OS installer dependencies; suitable for custom transports
+## such as gRPC or MQTT.
 engine = [
   "dep:bytes",
   "dep:futures-util",
@@ -22,14 +34,25 @@ engine = [
   "dep:tokio",
   "dep:tracing",
 ]
+
+## Built-in HTTP, GitHub Releases, and S3 update providers powered by `reqwest` (implies `engine`).
 http = ["engine", "dep:http", "dep:reqwest"]
+
+#! ### Installers & Tooling
+
+## Built-in OS-native installers (`DesktopInstaller`, `AndroidInstaller`, and `PlatformInstaller`).
+##
+## Orthogonal to `engine`: can be enabled standalone without `tokio` or HTTP dependencies.
 native-installer = [
-  "engine",
   "dep:infer",
   "dep:osakit",
   "dep:tar",
+  "dep:tempfile",
+  "dep:tracing",
   "dep:windows-sys",
 ]
+
+## Builds the `blockmap-gen` CLI binary without async runtime or transport dependencies.
 cli = ["dep:clap"]
 
 [[bin]]
@@ -52,6 +75,7 @@ aws-lc-rs.workspace = true
 base64.workspace = true
 bytes = { workspace = true, optional = true }
 clap = { workspace = true, optional = true }
+document-features.workspace = true
 flate2.workspace = true
 futures-util = { workspace = true, optional = true }
 http = { workspace = true, optional = true }

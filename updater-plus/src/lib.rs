@@ -1,13 +1,19 @@
+//! Framework-agnostic Electron-style blockmap differential update engine.
+//!
+//! # Feature flags
+//!
+#![doc = document_features::document_features!()]
+
 mod blockmap;
 #[cfg(feature = "engine")]
 mod cache;
 mod chunker;
-#[cfg(feature = "engine")]
+#[cfg(any(feature = "engine", feature = "native-installer"))]
 mod config;
 #[cfg(feature = "engine")]
 mod downloader;
 mod error;
-#[cfg(feature = "engine")]
+#[cfg(any(feature = "engine", feature = "native-installer"))]
 mod installer;
 #[cfg(feature = "engine")]
 mod listener;
@@ -28,7 +34,7 @@ pub use blockmap::{BlockMap, BlockMapArtifact, BlockMapFile};
 #[cfg(feature = "engine")]
 pub use cache::{CachedPackageState, LocalBasePackage, PackageCache};
 pub use chunker::{ChunkerConfig, FastCdc};
-#[cfg(feature = "engine")]
+#[cfg(any(feature = "engine", feature = "native-installer"))]
 pub use config::{Config, WindowsConfig, WindowsInstallMode};
 #[cfg(feature = "http")]
 pub use downloader::DownloadRequest;
@@ -37,7 +43,7 @@ pub use downloader::{DifferentialDownloader, ProviderDownloadRequest, TransferOp
 pub use error::{Error, Result, TransportError, TransportErrorKind};
 #[cfg(feature = "native-installer")]
 pub use installer::{AndroidApkLauncher, AndroidInstaller, DesktopInstaller, PlatformInstaller};
-#[cfg(feature = "engine")]
+#[cfg(any(feature = "engine", feature = "native-installer"))]
 pub use installer::{
     AuthenticodePolicy, InstallContext, MacosCodeSignVerifier, MacosSigningRequirement,
     UnsupportedInstaller, UpdateInstaller, WindowsAuthenticodeVerifier,

@@ -13,12 +13,21 @@ categories = ["development-tools", "network-programming"]
 links = "tauri-plugin-updater-plus"
 exclude = ["/guest-js"]
 
+[package.metadata.docs.rs]
+all-features = true
+
 [features]
+## Enables the built-in HTTP providers (`http`) and OS-native installers (`native-installer`).
 default = ["http", "native-installer"]
+
+## Enables built-in HTTP, GitHub Releases, and S3 providers via `updater-plus/http` and `Builder::headers`.
 http = ["dep:http", "updater-plus/http"]
+
+## Enables the default OS-native `PlatformInstaller` facade (desktop and Android) via `updater-plus/native-installer`.
 native-installer = ["updater-plus/native-installer"]
 
 [dependencies]
+document-features.workspace = true
 http = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
