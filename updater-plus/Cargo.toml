@@ -1,0 +1,84 @@
+[package]
+name = "updater-plus"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Framework-agnostic Electron-style blockmap differential update engine and CLI"
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+homepage.workspace = true
+keywords = ["updater", "blockmap", "differential", "hot-update", "fastcdc"]
+categories = ["development-tools", "network-programming"]
+
+[features]
+default = ["http", "native-installer"]
+engine = [
+  "dep:bytes",
+  "dep:futures-util",
+  "dep:minisign-verify",
+  "dep:percent-encoding",
+  "dep:tempfile",
+  "dep:tokio",
+  "dep:tracing",
+]
+http = ["engine", "dep:http", "dep:reqwest"]
+native-installer = [
+  "engine",
+  "dep:infer",
+  "dep:osakit",
+  "dep:tar",
+  "dep:windows-sys",
+]
+cli = ["dep:clap"]
+
+[[bin]]
+name = "blockmap-gen"
+path = "src/bin/blockmap-gen.rs"
+required-features = ["cli"]
+
+[[example]]
+name = "benchmark_update"
+path = "examples/benchmark_update.rs"
+required-features = ["http", "cli"]
+
+[[example]]
+name = "updater_client"
+path = "examples/updater_client/main.rs"
+required-features = ["http", "native-installer", "cli"]
+
+[dependencies]
+aws-lc-rs.workspace = true
+base64.workspace = true
+bytes = { workspace = true, optional = true }
+clap = { workspace = true, optional = true }
+flate2.workspace = true
+futures-util = { workspace = true, optional = true }
+http = { workspace = true, optional = true }
+infer = { workspace = true, optional = true }
+lazy-regex.workspace = true
+minisign-verify = { workspace = true, optional = true }
+percent-encoding = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tar = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
+thiserror.workspace = true
+time.workspace = true
+tokio = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
+url.workspace = true
+zip.workspace = true
+
+[target."cfg(target_os = \"macos\")".dependencies]
+osakit = { workspace = true, optional = true }
+
+[target."cfg(target_os = \"windows\")".dependencies]
+windows-sys = { workspace = true, optional = true }
+
+[dev-dependencies]
+axum.workspace = true
+tempfile.workspace = true
+tokio = { version = "1", features = ["full"] }

@@ -8,8 +8,18 @@
       "component": "tauri-plugin-updater-plus",
       "extra-files": [
         {
-          "jsonpath": "$.package.version",
+          "jsonpath": "$.workspace.package.version",
           "path": "Cargo.toml",
+          "type": "toml"
+        },
+        {
+          "jsonpath": "$.workspace.dependencies.updater-plus.version",
+          "path": "Cargo.toml",
+          "type": "toml"
+        },
+        {
+          "jsonpath": "$.package[?(@.name.value=='updater-plus')].version",
+          "path": "Cargo.lock",
           "type": "toml"
         },
         {

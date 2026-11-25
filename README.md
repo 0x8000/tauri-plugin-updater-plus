@@ -3,7 +3,10 @@
 [![crates.io](https://img.shields.io/crates/v/tauri-plugin-updater-plus.svg)](https://crates.io/crates/tauri-plugin-updater-plus)
 [![docs.rs](https://docs.rs/tauri-plugin-updater-plus/badge.svg)](https://docs.rs/tauri-plugin-updater-plus)
 
-Differential in-app updates for Tauri v3 applications.
+Differential updates powered by an Electron-style blockmap engine, split into two workspace crates:
+
+- [`updater-plus`](updater-plus): framework-agnostic differential download & verification engine, pluggable `UpdateProvider` / `UpdateInstaller` traits (with optional `native-installer` facade: `DesktopInstaller`, `AndroidInstaller`, `PlatformInstaller`), and the `blockmap-gen` CLI.
+- [`tauri-plugin-updater-plus`](tauri-plugin-updater-plus): Tauri v3 plugin, IPC commands, Android native bridge, and TypeScript guest bindings.
 
 | Platform | Supported |
 | -------- | --------- |
@@ -15,17 +18,9 @@ Differential in-app updates for Tauri v3 applications.
 
 ## Install
 
-_This plugin requires a Rust version of at least **1.95**._
+_This workspace requires a Rust version of at least **1.95**._
 
-There are three general methods of installation that we can recommend:
-
-1. Use crates.io (easiest, and requires you to trust that our publishing pipeline worked)
-2. Pull sources directly from GitHub using git tags / revision hashes (most secure)
-3. Git submodule install this repo in your Tauri project and then use file protocol to ingest the source (most secure, but inconvenient to use)
-
-Install the core plugin by adding the following to your `Cargo.toml` file:
-
-`src-tauri/Cargo.toml`
+For Tauri v3 applications, add `tauri-plugin-updater-plus` to `src-tauri/Cargo.toml`:
 
 ```toml
 # add to `[dependencies]` to target Linux, Windows, macOS, and Android
@@ -35,7 +30,15 @@ tauri-plugin-updater-plus = "0.4"
 tauri-plugin-updater-plus = { git = "https://github.com/0x8000/tauri-plugin-updater-plus", branch = "master" }
 ```
 
-The TypeScript guest bindings (built on `@tauri-apps/api/core`) are in [`guest-js/index.ts`](guest-js/index.ts) and can be imported directly into your frontend project.
+For non-Tauri applications (or custom hot-update flows such as web bundles or Lua scripts), depend directly on `updater-plus` without Tauri:
+
+```toml
+[dependencies]
+# Differential HTTP engine without OS installer dependencies:
+updater-plus = { version = "0.4", default-features = false, features = ["http"] }
+```
+
+The TypeScript guest bindings (built on `@tauri-apps/api/core`) are in [`tauri-plugin-updater-plus/guest-js/index.ts`](tauri-plugin-updater-plus/guest-js/index.ts) and can be imported directly into your frontend project.
 
 ## Usage
 
@@ -110,7 +113,7 @@ To publish differential updates, generate a `.blockmap` and manifest alongside y
 Download prebuilt binaries from [GitHub Releases](https://github.com/0x8000/tauri-plugin-updater-plus/releases), or install via Cargo:
 
 ```sh
-cargo install tauri-plugin-updater-plus --no-default-features --features cli
+cargo install updater-plus --no-default-features --features cli
 ```
 
 ```sh

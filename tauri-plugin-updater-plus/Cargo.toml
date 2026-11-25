@@ -1,0 +1,32 @@
+[package]
+name = "tauri-plugin-updater-plus"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Electron-style blockmap differential updater plugin for Tauri v3 applications"
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+homepage.workspace = true
+keywords = ["tauri", "tauri-plugin", "updater", "blockmap", "differential"]
+categories = ["development-tools", "network-programming"]
+links = "tauri-plugin-updater-plus"
+exclude = ["/guest-js"]
+
+[features]
+default = ["http", "native-installer"]
+http = ["dep:http", "updater-plus/http"]
+native-installer = ["updater-plus/native-installer"]
+
+[dependencies]
+http = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+tauri.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+updater-plus = { workspace = true, features = ["engine"] }
+url.workspace = true
+
+[build-dependencies]
+tauri-plugin.workspace = true
