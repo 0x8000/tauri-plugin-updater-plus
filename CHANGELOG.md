@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/0x8000/updater-plus/compare/v0.4.0...v0.5.0) (2026-11-25)
+
+
+### Features
+
+* **workspace:** split updater-plus core crate and pluggable installers ([6d1e122](https://github.com/0x8000/updater-plus/commit/6d1e1226267802729e00aa64d8f7aa9c370ea849))
+
 ## [0.4.0](https://github.com/0x8000/tauri-plugin-updater-plus/compare/v0.3.0...v0.4.0) (2026-11-24)
 
 
