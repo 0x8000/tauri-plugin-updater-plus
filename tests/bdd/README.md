@@ -1,12 +1,12 @@
 # Updater-Plus BDD Suite
 
-Self-contained end-to-end Behave BDD suite for `tauri-plugin-updater-plus`.
-Every scenario boots its own **isolated Docker network** and `testcontainers`
-service stack (`nginx-release` for RFC 9110 `multipart/byteranges` static
-hosting, and `cdn-gateway` for GitHub/S3 `302` signed-token redirects and
-single-range degradation). **No service ports are published to the host** — the
-runner probes readiness over real `/healthz` HTTP endpoints and addresses
-containers directly by their scenario bridge IPv4 addresses.
+Self-contained end-to-end Behave BDD suite for `updater-plus`. Every scenario
+boots its own **isolated Docker network** and `testcontainers` service stack
+(`nginx-release` for RFC 9110 `multipart/byteranges` static hosting, and
+`cdn-gateway` for GitHub/S3 `302` signed-token redirects and single-range
+degradation). **No service ports are published to the host** — the runner probes
+readiness over real `/healthz` HTTP endpoints and addresses containers directly
+by their scenario bridge IPv4 addresses.
 
 ## Architecture
 

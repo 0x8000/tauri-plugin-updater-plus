@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "updater-plus-bdd"
 version = "0.2.0"
-description = "End-to-end Behave BDD suite for tauri-plugin-updater-plus driven by testcontainers-python and OOP drivers"
+description = "End-to-end Behave BDD suite for updater-plus driven by testcontainers-python and OOP drivers"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

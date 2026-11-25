@@ -18,7 +18,7 @@ mod providers;
 #[derive(Parser)]
 #[command(
     name = "updater_client",
-    about = "End-to-end CLI harness driving the tauri-plugin-updater-plus public API"
+    about = "End-to-end CLI harness driving the updater-plus public API"
 )]
 struct Cli {
     #[command(subcommand)]

@@ -1,7 +1,8 @@
-# tauri-plugin-updater-plus
+# updater-plus
 
-[![crates.io](https://img.shields.io/crates/v/tauri-plugin-updater-plus.svg)](https://crates.io/crates/tauri-plugin-updater-plus)
-[![docs.rs](https://docs.rs/tauri-plugin-updater-plus/badge.svg)](https://docs.rs/tauri-plugin-updater-plus)
+[![updater-plus crates.io](https://img.shields.io/crates/v/updater-plus.svg?label=updater-plus)](https://crates.io/crates/updater-plus)
+[![tauri-plugin-updater-plus crates.io](https://img.shields.io/crates/v/tauri-plugin-updater-plus.svg?label=tauri-plugin-updater-plus)](https://crates.io/crates/tauri-plugin-updater-plus)
+[![docs.rs](https://docs.rs/updater-plus/badge.svg)](https://docs.rs/updater-plus)
 
 Differential updates powered by an Electron-style blockmap engine, split into two workspace crates:
 
@@ -27,7 +28,7 @@ For Tauri v3 applications, add `tauri-plugin-updater-plus` to `src-tauri/Cargo.t
 [dependencies]
 tauri-plugin-updater-plus = "0.4"
 # alternatively with Git:
-tauri-plugin-updater-plus = { git = "https://github.com/0x8000/tauri-plugin-updater-plus", branch = "master" }
+tauri-plugin-updater-plus = { git = "https://github.com/0x8000/updater-plus", branch = "master" }
 ```
 
 For non-Tauri applications (or custom hot-update flows such as web bundles or Lua scripts), depend directly on `updater-plus` without Tauri:
@@ -110,7 +111,7 @@ On Android, the plugin resolves `android-{arch}-apk`, `android-{arch}`, `android
 
 To publish differential updates, generate a `.blockmap` and manifest alongside your release files using `blockmap-gen`.
 
-Download prebuilt binaries from [GitHub Releases](https://github.com/0x8000/tauri-plugin-updater-plus/releases), or install via Cargo:
+Download prebuilt binaries from [GitHub Releases](https://github.com/0x8000/updater-plus/releases), or install via Cargo:
 
 ```sh
 cargo install updater-plus --no-default-features --features cli
