@@ -7,8 +7,8 @@ version = "0.4.0"
 edition = "2024"
 rust-version = "1.95"
 license = "Apache-2.0"
-repository = "https://github.com/0x8000/tauri-plugin-updater-plus"
-homepage = "https://github.com/0x8000/tauri-plugin-updater-plus"
+repository = "https://github.com/0x8000/updater-plus"
+homepage = "https://github.com/0x8000/updater-plus"
 
 [workspace.dependencies]
 aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }

@@ -3,7 +3,8 @@
 [![crates.io](https://img.shields.io/crates/v/tauri-plugin-updater-plus.svg)](https://crates.io/crates/tauri-plugin-updater-plus)
 [![docs.rs](https://docs.rs/tauri-plugin-updater-plus/badge.svg)](https://docs.rs/tauri-plugin-updater-plus)
 
-Differential in-app updates for Tauri v3 applications, powered by [`updater-plus`](../updater-plus).
+Differential in-app updates for Tauri v3 applications, powered by
+[`updater-plus`](../updater-plus).
 
 | Platform | Supported |
 | -------- | --------- |
@@ -24,7 +25,8 @@ Add to `src-tauri/Cargo.toml`:
 tauri-plugin-updater-plus = "0.4"
 ```
 
-The TypeScript guest bindings (built on `@tauri-apps/api/core`) are in [`guest-js/index.ts`](guest-js/index.ts).
+The TypeScript guest bindings (built on `@tauri-apps/api/core`) are in
+[`guest-js/index.ts`](guest-js/index.ts).
 
 ## Usage
 
@@ -44,7 +46,8 @@ pub fn run() {
 }
 ```
 
-You can also replace the default OS `PlatformInstaller` with a custom `UpdateInstaller` via `Builder::new().installer(...)`.
+You can also replace the default OS `PlatformInstaller` with a custom
+`UpdateInstaller` via `Builder::new().installer(...)`.
 
 ## License
 

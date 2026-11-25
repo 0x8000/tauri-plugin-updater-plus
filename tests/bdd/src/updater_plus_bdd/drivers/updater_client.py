@@ -82,7 +82,7 @@ class MinisignAuthority:
 
 
 class UpdaterAppDriver:
-    """Models an installed Tauri application invoking tauri-plugin-updater-plus."""
+    """Models an installed application invoking updater-plus."""
 
     def __init__(self, app_root: Path, binary: Path | None = None) -> None:
         self.app_root = app_root

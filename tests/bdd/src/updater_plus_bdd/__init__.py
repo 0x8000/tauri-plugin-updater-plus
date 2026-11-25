@@ -1,1 +1,1 @@
-"""Isolated per-scenario BDD harness for tauri-plugin-updater-plus."""
+"""Isolated per-scenario BDD harness for updater-plus."""
