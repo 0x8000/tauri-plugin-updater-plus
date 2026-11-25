@@ -4,108 +4,83 @@
 [![tauri-plugin-updater-plus crates.io](https://img.shields.io/crates/v/tauri-plugin-updater-plus.svg?label=tauri-plugin-updater-plus)](https://crates.io/crates/tauri-plugin-updater-plus)
 [![docs.rs](https://docs.rs/updater-plus/badge.svg)](https://docs.rs/updater-plus)
 
-Differential updates powered by an Electron-style blockmap engine, split into two workspace crates:
+Framework-agnostic Electron-style blockmap differential update engine, pluggable installer framework, `blockmap-gen` CLI, and Tauri v3 plugin.
 
-- [`updater-plus`](updater-plus): framework-agnostic differential download & verification engine, pluggable `UpdateProvider` / `UpdateInstaller` traits (with optional `native-installer` facade: `DesktopInstaller`, `AndroidInstaller`, `PlatformInstaller`), and the `blockmap-gen` CLI.
-- [`tauri-plugin-updater-plus`](tauri-plugin-updater-plus): Tauri v3 plugin, IPC commands, Android native bridge, and TypeScript guest bindings.
+## Workspace Crates
 
-| Platform | Supported |
-| -------- | --------- |
-| Linux    | ✓         |
-| Windows  | ✓         |
-| macOS    | ✓         |
-| Android  | ✓         |
-| iOS      | x         |
+| Crate | Purpose | Docs |
+| ----- | ------- | ---- |
+| [`updater-plus`](updater-plus) | Core FastCDC blockmap differential download, verification, caching, pluggable `UpdateProvider` & `UpdateInstaller` traits, optional OS-native installers (`DesktopInstaller`, `AndroidInstaller`, `PlatformInstaller`), and `blockmap-gen` CLI | [`updater-plus/README.md`](updater-plus/README.md) |
+| [`tauri-plugin-updater-plus`](tauri-plugin-updater-plus) | Tauri v3 plugin wrapper with IPC commands, permissions, Android native bridge, and TypeScript guest bindings | [`tauri-plugin-updater-plus/README.md`](tauri-plugin-updater-plus/README.md) |
 
-## Install
+## Features (`updater-plus`)
 
 _This workspace requires a Rust version of at least **1.95**._
 
-For Tauri v3 applications, add `tauri-plugin-updater-plus` to `src-tauri/Cargo.toml`:
+- `default = ["http", "native-installer"]`: HTTP/GitHub/S3 providers plus OS-native installers (`DesktopInstaller`, `AndroidInstaller`, `PlatformInstaller`).
+- `engine`: transport-agnostic differential core (`FastCdc`, `BlockMap`, `DownloadPlan`, `DifferentialDownloader`, `PackageCache`, `ArtifactVerifier`, `UpdateProvider`, `UpdateInstaller`, `Updater`) with zero Tauri or OS installer dependencies.
+- `http`: built-in HTTP, GitHub Releases, and S3 providers on top of `engine`.
+- `native-installer`: OS-native `DesktopInstaller` (Linux AppImage/deb/rpm, macOS `.app`, Windows NSIS/MSI), `AndroidInstaller`, and `PlatformInstaller` facade.
+- `cli`: builds the `blockmap-gen` CLI binary.
+
+## Quick Start
+
+### Differential Engine Only (Web Bundles, Lua Scripts, Custom Apps)
+
+Depend on `updater-plus` without native OS installers or Tauri:
 
 ```toml
-# add to `[dependencies]` to target Linux, Windows, macOS, and Android
 [dependencies]
-tauri-plugin-updater-plus = "0.4"
-# alternatively with Git:
-tauri-plugin-updater-plus = { git = "https://github.com/0x8000/updater-plus", branch = "master" }
-```
-
-For non-Tauri applications (or custom hot-update flows such as web bundles or Lua scripts), depend directly on `updater-plus` without Tauri:
-
-```toml
-[dependencies]
-# Differential HTTP engine without OS installer dependencies:
 updater-plus = { version = "0.4", default-features = false, features = ["http"] }
 ```
 
-The TypeScript guest bindings (built on `@tauri-apps/api/core`) are in [`tauri-plugin-updater-plus/guest-js/index.ts`](tauri-plugin-updater-plus/guest-js/index.ts) and can be imported directly into your frontend project.
-
-## Usage
-
-First, register the core plugin with Tauri:
-
-`src-tauri/src/lib.rs`
+Implement `UpdateInstaller` to apply downloaded and verified packages however your host runtime requires (e.g., versioned directory extraction, web asset reload, or Lua script hot-swap):
 
 ```rust
-pub fn run() {
-    tauri::Builder::default()
-        .setup(|app| {
-            #[cfg(not(target_os = "ios"))]
-            app.handle()
-                .plugin(tauri_plugin_updater_plus::Builder::new().build())?;
-            Ok(())
-        })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
-}
-```
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-Configure update endpoints in `src-tauri/tauri.conf.json`. Use `plugins.updater` when `bundle.createUpdaterArtifacts` is enabled so Tauri CLI's updater bundling and `tauri-plugin-updater-plus` share a single configuration (`plugins.updater-plus` is also supported standalone or as an overlay on top of `plugins.updater`):
+use semver::Version;
+use updater_plus::{
+    DummyListener, InstallContext, PackageCache, Result, UpdateInstaller, UpdaterBuilder,
+};
+use url::Url;
 
-```json
-{
-  "bundle": {
-    "createUpdaterArtifacts": true
-  },
-  "plugins": {
-    "updater": {
-      "pubkey": "<base64-minisign-public-key>",
-      "differential": true,
-      "endpoints": [
-        "https://github.com/owner/repo/releases/latest/download/latest.json"
-      ]
+#[derive(Debug)]
+struct CustomBundleInstaller;
+
+impl UpdateInstaller for CustomBundleInstaller {
+    fn install(&self, package_path: &Path, ctx: &InstallContext) -> Result<()> {
+        // Deploy verified archive at `package_path` for `ctx.version`
+        let _ = (package_path, ctx);
+        Ok(())
     }
-  }
+}
+
+async fn run_update(cache_dir: PathBuf, endpoint: Url) -> Result<()> {
+    let updater = UpdaterBuilder::new(
+        "my-bundle".into(),
+        Version::new(0, 1, 0),
+        cache_dir.join("active"),
+        PackageCache::new(cache_dir),
+    )
+    .target("web-bundle")
+    .endpoints(vec![endpoint])
+    .installer(Arc::new(CustomBundleInstaller))
+    .build()?;
+
+    if let Some(update) = updater.check().await? {
+        update.download_and_install(&DummyListener).await?;
+    }
+    Ok(())
 }
 ```
 
-Enable the default permissions in `src-tauri/capabilities/default.json`:
+### OS-Native App Updates
 
-```json
-{
-  "permissions": [
-    "updater-plus:default"
-  ]
-}
-```
+With default features (`http` + `native-installer`), `UpdaterBuilder` uses `PlatformInstaller::current()` automatically (delegating to `DesktopInstaller` on Linux/macOS/Windows, `AndroidInstaller` when configured with an `AndroidApkLauncher` on Android, and `UnsupportedInstaller` on unsupported targets).
 
-Afterwards, all plugin APIs are available through the JavaScript/TypeScript guest bindings:
-
-```ts
-import { check } from './guest-js'
-import { relaunch } from '@tauri-apps/plugin-process'
-
-const update = await check()
-if (update) {
-  await update.downloadAndInstall()
-  // Relaunch the app on macOS and Linux to run the newly installed version
-  // (Android hands off to the system package installer instead of relaunching).
-  await relaunch()
-}
-```
-
-On Android, the plugin resolves `android-{arch}-apk`, `android-{arch}`, `android-universal`, and `android` manifest targets, uses the installed base APK as a differential blockmap cache fallback, and hands verified `.apk` packages to the system package installer via a dedicated `FileProvider` (requesting `REQUEST_INSTALL_PACKAGES` on Android 8+ when needed).
+For **Tauri v3** applications, see [`tauri-plugin-updater-plus/README.md`](tauri-plugin-updater-plus/README.md).
 
 ## Generating Release Artifacts (`blockmap-gen`)
 
@@ -130,7 +105,7 @@ blockmap-gen manifest \
 # Generate only a .blockmap file
 blockmap-gen generate --input MyApp.AppImage
 
-# Pack a macOS .app bundle into a differential-friendly ZIP
+# Pack a directory (macOS .app bundle, web dist/, or Lua scripts) into a differential-friendly ZIP
 blockmap-gen pack-zip --dir MyApp.app --output MyApp.app.zip
 ```
 
