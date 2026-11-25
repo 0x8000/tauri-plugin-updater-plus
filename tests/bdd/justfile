@@ -17,8 +17,8 @@ venv:
 
 [working-directory("../..")]
 binaries:
-    cargo build --no-default-features --features cli --bin blockmap-gen
-    cargo build --all-features --example updater_client
+    cargo build -p updater-plus --no-default-features --features cli --bin blockmap-gen
+    cargo build -p updater-plus --all-features --example updater_client
 
 build-images:
     python scripts/build_images.py

@@ -49,21 +49,25 @@ jobs:
         run: |
           pre-commit run -a
 
-      - name: Cargo test (default plugin features)
+      - name: Cargo test (workspace default features)
         run: |
-          cargo test
+          cargo test --workspace
 
       - name: Cargo test (CLI only, no default features)
         run: |
-          cargo test --no-default-features --features cli
+          cargo test -p updater-plus --no-default-features --features cli
 
       - name: Cargo test (transport-agnostic engine only)
         run: |
-          cargo test --no-default-features --features engine
+          cargo test -p updater-plus --no-default-features --features engine
 
-      - name: Cargo test (all features)
+      - name: Cargo test (HTTP engine without native installers)
         run: |
-          cargo test --all-features
+          cargo test -p updater-plus --no-default-features --features http
+
+      - name: Cargo test (workspace all features)
+        run: |
+          cargo test --workspace --all-features
 
   bdd:
     runs-on: ubuntu-latest
@@ -86,8 +90,8 @@ jobs:
 
       - name: Build CLI and updater harness binaries
         run: |
-          cargo build --no-default-features --features cli --bin blockmap-gen
-          cargo build --all-features --example updater_client
+          cargo build -p updater-plus --no-default-features --features cli --bin blockmap-gen
+          cargo build -p updater-plus --all-features --example updater_client
 
       - name: Setup BDD Python environment
         run: |
@@ -129,17 +133,21 @@ jobs:
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
 
-      - name: Cargo clippy (all features)
+      - name: Cargo clippy (workspace all features)
         run: |
-          cargo clippy --all-targets --all-features -- -D warnings
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: Cargo clippy (engine only)
         run: |
-          cargo clippy --no-default-features --features engine -- -D warnings
+          cargo clippy -p updater-plus --no-default-features --features engine -- -D warnings
+
+      - name: Cargo clippy (HTTP engine without native installers)
+        run: |
+          cargo clippy -p updater-plus --no-default-features --features http -- -D warnings
 
       - name: Cargo clippy (CLI only)
         run: |
-          cargo clippy --no-default-features --features cli --bin blockmap-gen -- -D warnings
+          cargo clippy -p updater-plus --no-default-features --features cli --bin blockmap-gen -- -D warnings
 
   try-publish:
     runs-on: ubuntu-latest

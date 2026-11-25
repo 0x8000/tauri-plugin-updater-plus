@@ -1,88 +1,37 @@
-[package]
-name = "tauri-plugin-updater-plus"
+[workspace]
+resolver = "2"
+members = ["updater-plus", "tauri-plugin-updater-plus"]
+
+[workspace.package]
 version = "0.4.0"
 edition = "2024"
 rust-version = "1.95"
-description = "Electron-style blockmap differential updater plugin and CLI for Tauri v3 applications"
 license = "Apache-2.0"
-readme = "README.md"
 repository = "https://github.com/0x8000/tauri-plugin-updater-plus"
 homepage = "https://github.com/0x8000/tauri-plugin-updater-plus"
-keywords = ["tauri", "tauri-plugin", "updater", "blockmap", "differential"]
-categories = ["development-tools", "network-programming"]
-links = "tauri-plugin-updater-plus"
-exclude = [
-  "/.github",
-  "/.editorconfig",
-  "/.pre-commit-config.yaml",
-  "/.release-please-manifest.json",
-  "/biome.jsonc",
-  "/Cross.toml",
-  "/guest-js",
-  "/justfile",
-  "/release-please-config.json",
-  "/rust-toolchain.toml",
-  "/tests",
-]
 
-[workspace]
-
-[profile.release]
-strip = true
-
-[features]
-default = ["plugin", "http"]
-engine = [
-  "dep:bytes",
-  "dep:futures-util",
-  "dep:infer",
-  "dep:minisign-verify",
-  "dep:osakit",
-  "dep:percent-encoding",
-  "dep:tar",
-  "dep:tempfile",
-  "dep:tokio",
-  "dep:tracing",
-  "dep:windows-sys",
-]
-http = ["engine", "dep:http", "dep:reqwest"]
-plugin = ["engine", "dep:tauri"]
-cli = ["dep:clap"]
-
-[[bin]]
-name = "blockmap-gen"
-path = "src/bin/blockmap-gen.rs"
-required-features = ["cli"]
-
-[[example]]
-name = "benchmark_update"
-path = "examples/benchmark_update.rs"
-required-features = ["http", "cli"]
-
-[[example]]
-name = "updater_client"
-path = "examples/updater_client/main.rs"
-required-features = ["http", "cli"]
-
-[dependencies]
+[workspace.dependencies]
 aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
+axum = "0.8"
 base64 = "0.22"
-bytes = { version = "1", optional = true }
-clap = { version = "4", features = ["derive"], optional = true }
+bytes = "1"
+clap = { version = "4", features = ["derive"] }
 flate2 = "1"
-futures-util = { version = "0.3", optional = true }
-http = { version = "1", optional = true }
-infer = { version = "0.22", optional = true }
+futures-util = "0.3"
+http = "1"
+infer = "0.22"
 lazy-regex = "3"
-minisign-verify = { version = "0.2", optional = true }
-percent-encoding = { version = "2", optional = true }
-reqwest = { version = "0.13", features = ["json", "stream"], optional = true }
+minisign-verify = "0.2"
+osakit = { version = "0.3", features = ["full"] }
+percent-encoding = "2"
+reqwest = { version = "0.13", features = ["json", "stream"] }
 semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tar = { version = "0.4", optional = true }
-tauri = { version = "3.0.0-alpha.5", default-features = false, optional = true }
-tempfile = { version = "3", optional = true }
+tar = "0.4"
+tauri = { version = "3.0.0-alpha.5", default-features = false }
+tauri-plugin = { version = "3.0.0-alpha.3", features = ["build"] }
+tempfile = "3"
 thiserror = "2"
 time = { version = "0.3", features = ["formatting", "parsing"] }
 tokio = { version = "1", features = [
@@ -92,25 +41,16 @@ tokio = { version = "1", features = [
   "rt-multi-thread",
   "sync",
   "time",
-], optional = true }
-tracing = { version = "0.1", optional = true }
+] }
+tracing = "0.1"
+updater-plus = { version = "0.4.0", path = "updater-plus", default-features = false }
 url = { version = "2", features = ["serde"] }
-zip = { version = "4", default-features = false, features = ["deflate"] }
-
-[target."cfg(target_os = \"macos\")".dependencies]
-osakit = { version = "0.3", features = ["full"], optional = true }
-
-[target."cfg(target_os = \"windows\")".dependencies]
 windows-sys = { version = "0.60", features = [
   "Win32_Foundation",
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
-], optional = true }
+] }
+zip = { version = "4", default-features = false, features = ["deflate"] }
 
-[build-dependencies]
-tauri-plugin = { version = "3.0.0-alpha.3", features = ["build"] }
-
-[dev-dependencies]
-axum = "0.8"
-tempfile = "3"
-tokio = { version = "1", features = ["full"] }
+[profile.release]
+strip = true
