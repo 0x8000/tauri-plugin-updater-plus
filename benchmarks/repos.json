@@ -16,11 +16,46 @@
       "repo": "getpaseo/paseo"
     },
     {
-      "assetPattern": "^Clash\\.Verge_.*_x64-setup\\.exe$",
-      "format": "NSIS Setup (Tauri)",
-      "id": "clash-verge-nsis",
+      "assetPattern": "^yaak_.*_amd64\\.AppImage$",
+      "format": "AppImage (Tauri)",
+      "id": "yaak-appimage",
       "includePrerelease": false,
-      "repo": "clash-verge-rev/clash-verge-rev"
+      "repo": "mountain-loop/yaak"
+    },
+    {
+      "assetPattern": "^Handy_.*_amd64\\.AppImage$",
+      "format": "AppImage (Tauri)",
+      "id": "handy-appimage",
+      "includePrerelease": false,
+      "repo": "cjpais/Handy"
+    },
+    {
+      "assetPattern": "^pot_.*_amd64\\.AppImage$",
+      "format": "AppImage (Tauri)",
+      "id": "pot-appimage",
+      "includePrerelease": false,
+      "repo": "pot-app/pot-desktop"
+    },
+    {
+      "assetPattern": "^OBS-Studio-.*-Windows-x64\\.zip$",
+      "format": "Windows ZIP (C++/Qt)",
+      "id": "obs-win-zip",
+      "includePrerelease": false,
+      "repo": "obsproject/obs-studio"
+    },
+    {
+      "assetPattern": "^AppFlowy-.*-windows-x86_64\\.zip$",
+      "format": "Windows ZIP (Rust+Flutter)",
+      "id": "appflowy-win-zip",
+      "includePrerelease": false,
+      "repo": "AppFlowy-IO/AppFlowy"
+    },
+    {
+      "assetPattern": "^WezTerm-windows-.*\\.zip$",
+      "format": "Windows ZIP (Rust)",
+      "id": "wezterm-win-zip",
+      "includePrerelease": false,
+      "repo": "wezterm/wezterm"
     },
     {
       "assetPattern": "^LocalSend-.*-android-arm64v8\\.apk$",
