@@ -372,6 +372,14 @@ mod tests {
 
         let missing = temp.path().join("does-not-exist");
         let err_zip = temp.path().join("err.zip");
-        assert!(Cli::pack_directory_zip(&missing, &err_zip).is_err());
+        let err = Cli::pack_directory_zip(&missing, &err_zip)
+            .expect_err("missing source directory must fail");
+        assert!(
+            matches!(
+                err,
+                updater_plus::Error::Io(ref io_err) if io_err.kind() == std::io::ErrorKind::NotFound
+            ),
+            "expected NotFound I/O error, got {err:?}"
+        );
     }
 }

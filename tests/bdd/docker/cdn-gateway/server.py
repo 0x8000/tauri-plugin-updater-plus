@@ -38,6 +38,7 @@ class GatewayState:
         self.sigv4_access_key = "AKIA_BDD_KEY"
         self.sigv4_secret_key = "BDD_SECRET_ACCESS_KEY"
         self.sigv4_session_token: str | None = "BDD_STS_SESSION_TOKEN"
+        self.missing_blockmap_403 = False
         self.github_tag = "v0.2.0"
         self.github_assets: dict[int, str] = {}
         self.origin_requests = 0
@@ -77,6 +78,8 @@ class GatewayState:
             if "sigv4_session_token" in payload:
                 val = payload["sigv4_session_token"]
                 self.sigv4_session_token = None if val is None else str(val)
+            if "missing_blockmap_403" in payload:
+                self.missing_blockmap_403 = bool(payload["missing_blockmap_403"])
             if "github_tag" in payload:
                 self.github_tag = str(payload["github_tag"])
             if "github_assets" in payload:
@@ -302,6 +305,10 @@ class OriginHandler(BaseHTTPRequestHandler):
                 return
             with STATE.lock:
                 STATE.sigv4_verified_requests += 1
+                missing_403 = STATE.missing_blockmap_403
+            if missing_403 and rel.endswith(".blockmap") and not file_path.is_file():
+                self.send_error(HTTPStatus.FORBIDDEN, "AccessDenied: missing blockmap")
+                return
             serve_file_with_mode(self, file_path, "s3_single_only_200_on_multi")
             return
 

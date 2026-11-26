@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::Path;
 #[cfg(feature = "http")]
 use std::str::FromStr;
 use std::time::Duration;
@@ -91,10 +91,25 @@ struct UpdateResource(Update);
 impl Resource for UpdateResource {}
 
 struct DownloadedPackageResource {
-    path: PathBuf,
+    staged_path: tempfile::TempPath,
     restart_after_install: Option<bool>,
 }
 impl Resource for DownloadedPackageResource {}
+
+fn stage_isolated_package(source_path: &Path) -> updater_plus::Result<tempfile::TempPath> {
+    let parent = source_path.parent().ok_or_else(|| {
+        Error::Install("cannot determine parent directory of downloaded package".into())
+    })?;
+    let staged = tempfile::Builder::new()
+        .prefix(".pending-install-")
+        .tempfile_in(parent)?
+        .into_temp_path();
+    let _ = std::fs::remove_file(&staged);
+    if std::fs::hard_link(source_path, &staged).is_err() {
+        std::fs::copy(source_path, &staged)?;
+    }
+    Ok(staged)
+}
 
 struct ChannelListener {
     channel: Channel<DownloadEvent>,
@@ -205,8 +220,12 @@ pub(crate) async fn download<R: Runtime>(
     };
     let listener = ChannelListener { channel: on_event };
     let downloaded = update.download(&listener).await?;
+    let downloaded_path = downloaded.path;
+    let staged_path = tokio::task::spawn_blocking(move || stage_isolated_package(&downloaded_path))
+        .await
+        .map_err(|err| Error::Io(std::io::Error::other(err.to_string())))??;
     let pkg_rid = webview.resources_table().add(DownloadedPackageResource {
-        path: downloaded.path,
+        staged_path,
         restart_after_install: restart_override,
     });
     Ok(DownloadResult {
@@ -236,11 +255,13 @@ pub(crate) async fn install<R: Runtime>(
     if let Some(restart) = restart_choice {
         update = update.restart_after_install(restart);
     }
-    let package_path = package.path.clone();
-    drop(package);
-    tokio::task::spawn_blocking(move || update.install_file(&package_path))
-        .await
-        .map_err(|err| Error::Io(std::io::Error::other(err.to_string())))??;
+    let package_path = package.staged_path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let _keep_alive = package;
+        update.install_file(&package_path)
+    })
+    .await
+    .map_err(|err| Error::Io(std::io::Error::other(err.to_string())))??;
     let _ = webview.resources_table().close(package_rid);
     Ok(())
 }

@@ -21,6 +21,19 @@ Feature: Object-store single-range degradation 302 CDN redirects and endpoint fa
     And CDN gateway "origin" recorded 2 redirects 0 leaked credentials and at least 4 single-range 206 responses
     And the installed AppImage matches artifact "0.2.0" with mode "0750"
 
+  Scenario: Concurrent single-range workers hitting an expired 302 CDN token serialize refresh without thundering herd
+    Given a running CDN release gateway "origin" in "redirect" mode
+    And CDN gateway "origin" publishes artifact "0.2.0" as "latest.json" in "tauri" format with notes "Concurrent CDN refresh"
+    And the updater configures useMultipleRangeRequest to "false"
+    And the updater configures maxConcurrentRanges to 4
+    And the updater sends Authorization "Bearer gh-token-secret" and Cookie "session=gh-cookie"
+    And the updater endpoints are "cdn:origin/latest.json"
+    When the application executes "download_and_install"
+    Then the update succeeds in "differential" mode to version "0.2.0"
+    And the transfer saves more than 75.0 percent of package bytes
+    And CDN gateway "origin" recorded 2 redirects 0 leaked credentials and at least 4 single-range 206 responses
+    And the installed AppImage matches artifact "0.2.0" with mode "0750"
+
   Scenario: Object store returning 200 OK on multi-range degrades to concurrent single-range differential transfer
     Given a running CDN release gateway "origin" in "s3_single_only_200_on_multi" mode
     And CDN gateway "origin" publishes artifact "0.2.0" as "latest.json" in "tauri" format with notes "S3 single-range degradation"

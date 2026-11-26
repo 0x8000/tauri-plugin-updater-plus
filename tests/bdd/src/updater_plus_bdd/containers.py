@@ -144,6 +144,10 @@ class CdnGatewayContainer:
     def api_base_url(self) -> str:
         return f"http://{self.ip}:{CDN_ORIGIN_PORT}/"
 
+    @property
+    def cdn_base_url(self) -> str:
+        return f"http://{self.ip}:{CDN_ASSET_PORT}/cdn/signed-v2/"
+
     def stop(self) -> None:
         self._container.stop()
 

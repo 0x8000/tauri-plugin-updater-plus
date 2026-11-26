@@ -31,7 +31,7 @@ Depend on `updater-plus` without native OS installers or Tauri:
 
 ```toml
 [dependencies]
-updater-plus = { version = "0.4", default-features = false, features = ["http"] }
+updater-plus = { version = "0.5", default-features = false, features = ["http"] }
 ```
 
 Implement `UpdateInstaller` to apply downloaded and verified packages however your host runtime requires (e.g., versioned directory extraction, web asset reload, or Lua script hot-swap):

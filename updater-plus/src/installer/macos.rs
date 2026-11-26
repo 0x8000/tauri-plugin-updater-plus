@@ -17,9 +17,26 @@ impl MacosInstaller {
         let len = File::open(package_path)?.read(&mut header)?;
         let header = &header[..len];
 
-        let tmp_extract = tempfile::Builder::new()
-            .prefix("updater_plus_updated_app")
-            .tempdir()?;
+        let parent_dir = context.extract_path.parent();
+        let tmp_extract = match parent_dir
+            .map(|dir| {
+                tempfile::Builder::new()
+                    .prefix(".updater_plus_updated_app_")
+                    .tempdir_in(dir)
+            })
+            .transpose()
+        {
+            Ok(Some(dir)) => dir,
+            Ok(None) => tempfile::Builder::new()
+                .prefix("updater_plus_updated_app")
+                .tempdir()?,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                tempfile::Builder::new()
+                    .prefix("updater_plus_updated_app")
+                    .tempdir()?
+            }
+            Err(error) => return Err(error.into()),
+        };
         let extracted_app = if infer::archive::is_zip(header) {
             Self::extract_app_from_zip(package_path, tmp_extract.path())?
         } else if infer::archive::is_gz(header) {
@@ -32,7 +49,6 @@ impl MacosInstaller {
 
         MacosCodeSignVerifier::verify_bundle_update(&context.extract_path, &extracted_app)?;
 
-        let parent_dir = context.extract_path.parent();
         let tmp_backup = match parent_dir
             .map(|dir| {
                 tempfile::Builder::new()
@@ -56,7 +72,17 @@ impl MacosInstaller {
             match std::fs::rename(&context.extract_path, &backup_dest) {
                 Ok(()) => {
                     if let Err(error) = Self::move_or_ditto(&extracted_app, &context.extract_path) {
-                        let _ = std::fs::rename(&backup_dest, &context.extract_path);
+                        let _ = std::fs::remove_dir_all(&context.extract_path);
+                        if let Err(rollback_err) =
+                            std::fs::rename(&backup_dest, &context.extract_path)
+                        {
+                            let preserved = tmp_backup.keep();
+                            tracing::error!(
+                                backup = %preserved.display(),
+                                error = %rollback_err,
+                                "macOS rollback rename failed; preserved previous app bundle backup"
+                            );
+                        }
                         return Err(error);
                     }
                 }

@@ -13,6 +13,7 @@ use crate::listener::{DownloadEvent, DownloadListener};
 use crate::provider::{ArtifactId, TransferOverrides};
 use crate::provider::{ByteStream, DownloadSession, UpdateProvider};
 use crate::session::{DownloadedPackage, FullSession};
+use crate::verifier::VerifyPolicy;
 use crate::{Error, Result};
 
 mod plan;
@@ -43,31 +44,50 @@ impl DifferentialDownloader {
 
     /// Constructs an HTTP downloader backed by `headers`, `cache`, and `options`.
     #[cfg(feature = "http")]
+    pub fn http(headers: HeaderMap, cache: PackageCache, options: TransferOptions) -> Result<Self> {
+        let downloader = crate::provider::http::HttpDownloader::builder()
+            .default_headers(headers)
+            .transfer_options(options)
+            .build()?;
+        let placeholder = Url::parse("http://localhost/")?;
+        let provider =
+            crate::provider::http::StaticHttpProvider::new(downloader, vec![placeholder])?;
+        Ok(Self::with_provider(Arc::new(provider), cache))
+    }
+
+    /// Constructs an HTTP downloader backed by `headers`, `cache`, and `options`.
+    ///
+    /// Prefer [`Self::http`] or [`Self::with_provider`]; the `_client` parameter is ignored because
+    /// [`crate::HttpDownloader`] owns its `reqwest::Client` to enforce manual redirect handling.
+    #[cfg(feature = "http")]
+    #[deprecated(
+        since = "0.5.0",
+        note = "use DifferentialDownloader::http or DifferentialDownloader::with_provider; the reqwest::Client argument is ignored"
+    )]
     pub fn new(
         _client: reqwest::Client,
         headers: HeaderMap,
         cache: PackageCache,
         options: TransferOptions,
     ) -> Self {
-        let downloader = crate::provider::http::HttpDownloader::builder()
-            .default_headers(headers)
-            .transfer_options(options)
-            .build()
-            .expect("valid default HttpDownloader");
-        let placeholder = Url::parse("http://localhost/").expect("valid placeholder url");
-        let provider =
-            crate::provider::http::StaticHttpProvider::new(downloader, vec![placeholder])
-                .expect("valid StaticHttpProvider");
-        Self::with_provider(Arc::new(provider), cache)
+        Self::http(headers, cache, options).expect("valid default HttpDownloader")
     }
 
     /// Downloads, reconstructs, verifies, and caches a package using the configured [`UpdateProvider`].
+    ///
+    /// Fails closed before issuing any network transfer if `request.verification` does not supply
+    /// a valid SHA-512 checksum or minisign public key + signature pair.
     pub async fn download_with_provider<L: DownloadListener>(
         &self,
         request: &ProviderDownloadRequest,
         listener: &L,
     ) -> Result<DownloadedPackage> {
-        std::fs::create_dir_all(self.cache.directory())?;
+        VerifyPolicy::from_expectation(&request.verification)?;
+        let cache_dir = self.cache.directory().to_path_buf();
+        tokio::task::spawn_blocking(move || std::fs::create_dir_all(cache_dir))
+            .await
+            .map_err(|err| Error::Io(std::io::Error::other(err.to_string())))??;
+
         let session = self
             .provider
             .open_session(&request.artifact, &request.overrides)
@@ -95,13 +115,18 @@ impl DifferentialDownloader {
                                 "falling back to full package download"
                             );
                             let reason = Some(fallback.reason);
+                            let trusted_blockmap = if fallback.invalidate_blockmap {
+                                None
+                            } else {
+                                remote_blockmap
+                            };
                             if let Some(byte_stream) = fallback.full_stream {
                                 return self
                                     .finish_full_stream(
                                         request,
                                         FullStreamContext {
                                             byte_stream,
-                                            remote_blockmap,
+                                            remote_blockmap: trusted_blockmap,
                                             request_count: session.stats().requests.max(1),
                                             fallback_reason: reason,
                                         },
@@ -109,7 +134,7 @@ impl DifferentialDownloader {
                                     )
                                     .await;
                             }
-                            (reason, remote_blockmap)
+                            (reason, trusted_blockmap)
                         }
                     }
                 }
@@ -160,7 +185,7 @@ impl DifferentialDownloader {
     async fn execute_differential<L: DownloadListener>(
         &self,
         session: &dyn DownloadSession,
-        mut ctx: DifferentialContext,
+        ctx: DifferentialContext,
         listener: &L,
     ) -> Result<DifferentialOutcome> {
         listener.on_event(DownloadEvent::Started {
@@ -170,20 +195,21 @@ impl DifferentialDownloader {
             reused_bytes: ctx.reused_bytes,
         });
 
-        let fetch_outcome = fetch_ranges_into_session(
+        let diff_session = match fetch_ranges_into_session(
             session,
             &ctx.missing_ranges,
-            &mut ctx.diff_session,
+            ctx.diff_session,
             listener,
         )
-        .await?;
-
-        if let RangeLoopOutcome::Fallback(detail) = fetch_outcome {
-            return Ok(DifferentialOutcome::Fallback(detail));
-        }
+        .await?
+        {
+            RangeLoopOutcome::Completed(session) => *session,
+            RangeLoopOutcome::Fallback(detail) => {
+                return Ok(DifferentialOutcome::Fallback(detail));
+            }
+        };
 
         let requests = session.stats().requests;
-        let diff_session = ctx.diff_session;
         let finished =
             tokio::task::spawn_blocking(move || diff_session.finish_with_stats(requests)).await;
 
@@ -194,12 +220,16 @@ impl DifferentialDownloader {
                 });
                 Ok(DifferentialOutcome::Completed(package))
             }
-            Ok(Err(error)) => Ok(DifferentialOutcome::Fallback(FallbackDetail::reason(
-                format!("reconstructed package verification failed: {error}"),
-            ))),
-            Err(error) => Ok(DifferentialOutcome::Fallback(FallbackDetail::reason(
-                format!("differential verify task failed: {error}"),
-            ))),
+            Ok(Err(error)) => Ok(DifferentialOutcome::Fallback(
+                FallbackDetail::invalidating_blockmap(format!(
+                    "reconstructed package verification failed: {error}"
+                )),
+            )),
+            Err(error) => Ok(DifferentialOutcome::Fallback(
+                FallbackDetail::invalidating_blockmap(format!(
+                    "differential verify task failed: {error}"
+                )),
+            )),
         }
     }
 
@@ -217,17 +247,26 @@ impl DifferentialDownloader {
             reused_bytes: 0,
         });
 
-        let mut full_session = FullSession::open_with_expectation(
-            self.cache.clone(),
-            request.version.clone(),
-            request.verification.clone(),
-        )?;
+        let cache = self.cache.clone();
+        let version = request.version.clone();
+        let verification = request.verification.clone();
+        let mut full_session = tokio::task::spawn_blocking(move || {
+            FullSession::open_with_expectation(cache, version, verification)
+        })
+        .await
+        .map_err(|err| Error::Io(std::io::Error::other(err.to_string())))??;
 
         while let Some(chunk) = ctx.byte_stream.stream.next().await {
             let chunk = chunk?;
-            full_session.write_chunk(&chunk)?;
+            let chunk_len = chunk.len();
+            full_session = tokio::task::spawn_blocking(move || -> Result<FullSession> {
+                full_session.write_chunk(&chunk)?;
+                Ok(full_session)
+            })
+            .await
+            .map_err(|err| Error::Io(std::io::Error::other(err.to_string())))??;
             listener.on_event(DownloadEvent::Progress {
-                chunk_length: chunk.len(),
+                chunk_length: chunk_len,
             });
         }
 

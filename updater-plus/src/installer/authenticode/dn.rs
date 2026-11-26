@@ -61,6 +61,11 @@ impl DistinguishedName {
         while idx < chars.len() {
             let (byte_pos, ch) = chars[idx];
             if quoted {
+                if ch == '\\' && idx + 1 < chars.len() {
+                    token.push(chars[idx + 1].1);
+                    idx += 2;
+                    continue;
+                }
                 if ch == '"' {
                     quoted = false;
                 } else {

@@ -171,7 +171,7 @@ impl Builder {
                 let cache_dir = app
                     .path()
                     .app_cache_dir()
-                    .unwrap_or_else(|_| std::env::temp_dir().join(&app.package_info().name))
+                    .or_else(|_| app.path().app_local_data_dir())?
                     .join("updater-plus");
                 #[cfg(target_os = "android")]
                 let (cache, default_installer) = {

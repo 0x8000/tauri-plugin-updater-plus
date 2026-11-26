@@ -45,12 +45,17 @@ impl WindowsInstaller {
                 SW_SHOW,
             )
         };
-        if (result as isize) <= 32 {
-            return Err(Error::Io(std::io::Error::last_os_error()));
+        let code = result as isize;
+        if code <= 32 {
+            return Err(Error::Install(format!(
+                "ShellExecuteW failed to launch Windows installer with code {code}"
+            )));
         }
         // Keep the staging directory only after the OS installer process has launched.
+        // Return cleanly so the host application can complete IPC replies, run Drop handlers,
+        // and shut down gracefully while the detached installer runs.
         let _ = temp_dir.keep();
-        std::process::exit(0);
+        Ok(())
     }
 
     fn prepare_installer(
@@ -61,16 +66,22 @@ impl WindowsInstaller {
         let len = File::open(package_path)?.read(&mut header)?;
         let header = &header[..len];
         let safe_name = Self::sanitize_stem(&context.app_name);
+        let safe_version = Self::sanitize_stem(&context.version);
 
         let temp_dir = tempfile::Builder::new()
-            .prefix(&format!("{safe_name}-{}-updater-", context.version))
+            .prefix(&format!("{safe_name}-{safe_version}-updater-"))
             .tempdir()?;
 
         if infer::archive::is_zip(header) {
             let mut archive = zip::ZipArchive::new(File::open(package_path)?)?;
             archive.extract(temp_dir.path())?;
-            for entry in std::fs::read_dir(temp_dir.path())? {
-                let path = entry?.path();
+            let mut entries: Vec<PathBuf> = std::fs::read_dir(temp_dir.path())?
+                .collect::<std::io::Result<Vec<_>>>()?
+                .into_iter()
+                .map(|entry| entry.path())
+                .collect();
+            entries.sort();
+            for path in entries {
                 if !path.is_file() {
                     continue;
                 }
@@ -95,14 +106,14 @@ impl WindowsInstaller {
         if infer::app::is_exe(header) {
             let dest = temp_dir
                 .path()
-                .join(format!("{safe_name}-{}-setup.exe", context.version));
+                .join(format!("{safe_name}-{safe_version}-setup.exe"));
             std::fs::copy(package_path, &dest)?;
             return Ok((temp_dir, dest, false));
         }
         if infer::archive::is_msi(header) {
             let dest = temp_dir
                 .path()
-                .join(format!("{safe_name}-{}.msi", context.version));
+                .join(format!("{safe_name}-{safe_version}.msi"));
             std::fs::copy(package_path, &dest)?;
             return Ok((temp_dir, dest, true));
         }

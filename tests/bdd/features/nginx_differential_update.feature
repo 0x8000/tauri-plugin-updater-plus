@@ -53,3 +53,19 @@ Feature: Differential update reconstruction over a real Nginx HTTP server
     Then the update succeeds in "full" mode to version "0.2.0"
     And the fallback reason contains "delta requires"
     And the installed AppImage matches artifact "0.2.0" with mode "0750"
+
+  Scenario: Stale remote blockmap triggers full fallback and regenerates clean cache for the next differential update
+    Given a delta release artifact "0.3.0" derived from "0.2.0" at offsets "350000,1100000"
+    And an installed AppImage at version "0.1.0" with seeded cache
+    And Nginx server "primary" publishes artifact "0.2.0" as "latest.json" in "tauri" format
+    And Nginx server "primary" replaces the blockmap for "0.2.0" with a stale blockmap from "0.1.0"
+    And the updater endpoints are "nginx:primary/latest.json"
+    When the application executes "download_and_install"
+    Then the update succeeds in "full" mode to version "0.2.0"
+    And the fallback reason contains "reconstructed package verification failed"
+    And the installed AppImage matches artifact "0.2.0" with mode "0750"
+    When Nginx server "primary" publishes artifact "0.3.0" as "latest.json" in "tauri" format
+    And the application executes "download_and_install"
+    Then the update succeeds in "differential" mode to version "0.3.0"
+    And the transfer saves more than 80.0 percent of package bytes
+    And the installed AppImage matches artifact "0.3.0" with mode "0750"

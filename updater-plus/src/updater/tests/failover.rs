@@ -146,9 +146,25 @@ async fn handles_version_comparisons_204_failover_and_builder_validation() {
             )
             .config(bad_cfg)
             .build(),
-            Err(Error::InvalidConfig(_))
+            Err(Error::InvalidConfig(ref msg)) if msg.contains("fullDownloadThreshold")
         ));
     }
+    let blank_pubkey_cfg = Config {
+        endpoints: vec![base_url.join("v09.json").expect("url")],
+        pubkey: Some("   ".into()),
+        ..Config::default()
+    };
+    assert!(matches!(
+        UpdaterBuilder::new(
+            "myapp".into(),
+            Version::new(0, 1, 0),
+            temp.path().join("app"),
+            cache.clone()
+        )
+        .config(blank_pubkey_cfg)
+        .build(),
+        Err(Error::InvalidConfig(ref msg)) if msg.contains("pubkey")
+    ));
     let bad_dn_cfg = Config {
         endpoints: vec![base_url.join("v09.json").expect("url")],
         windows: Some(crate::config::WindowsConfig {
@@ -257,12 +273,16 @@ fn expands_endpoint_template_placeholders() {
         "https://updates.example.com/{{target}}/{{current_version}}/latest.json?t={{target}}&a={{arch}}&b={{bundle_type}}&v={{current_version}}",
     )
     .expect("url");
-    let expanded = TargetResolver::expand_endpoint(&raw, "linux-x86_64", "0.1.0+build 1#rc?2")
-        .expect("expand");
-    assert!(expanded.as_str().starts_with(
-        "https://updates.example.com/linux-x86_64/0.1.0+build%201%23rc%3F2/latest.json?"
-    ));
-    assert!(expanded.query().expect("query").contains("t=linux-x86_64"));
-    assert!(!expanded.as_str().contains("{{"));
-    assert!(!expanded.as_str().contains("%7B%7B"));
+    let expanded = TargetResolver::expand_endpoint_with_parts(
+        &raw,
+        "linux-x86_64",
+        "x86_64",
+        "appimage",
+        "0.1.0+build 1#rc?2",
+    )
+    .expect("expand");
+    assert_eq!(
+        expanded.as_str(),
+        "https://updates.example.com/linux-x86_64/0.1.0+build%201%23rc%3F2/latest.json?t=linux-x86_64&a=x86_64&b=appimage&v=0.1.0+build%201%23rc%3F2"
+    );
 }

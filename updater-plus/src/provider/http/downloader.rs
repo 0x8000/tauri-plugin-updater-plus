@@ -15,7 +15,7 @@ use super::middleware::{
 };
 use super::redirect::{RedirectRequest, execute_with_manual_redirects};
 use super::session::HttpDownloadSession;
-use super::wire::read_bounded_body;
+use super::wire::{read_bounded_body, redact_url};
 use crate::downloader::TransferOptions;
 use crate::provider::{BoxFuture, DownloadSession, TransferOverrides};
 use crate::{Error, Result};
@@ -141,13 +141,32 @@ impl HttpDownloader {
 
     pub(crate) async fn send_with_origin(
         &self,
-        mut req: HttpRequest,
+        req: HttpRequest,
         original_url: &Url,
         stage: RequestStage,
         overrides: &TransferOverrides,
     ) -> Result<HttpResponse> {
+        let client = self.resolve_client(overrides)?;
+        self.send_with_client(
+            &client,
+            OriginSendParams {
+                req,
+                original_url,
+                stage,
+                overrides,
+            },
+        )
+        .await
+    }
+
+    pub(crate) async fn send_with_client(
+        &self,
+        client: &reqwest::Client,
+        params: OriginSendParams<'_>,
+    ) -> Result<HttpResponse> {
+        let mut req = params.req;
         let mut base_headers = self.inner.default_headers.clone();
-        for (key, value) in &overrides.metadata {
+        for (key, value) in &params.overrides.metadata {
             let name = HeaderName::from_str(key).map_err(|error| {
                 Error::InvalidHeader(format!("invalid header name '{key}': {error}"))
             })?;
@@ -163,9 +182,9 @@ impl HttpDownloader {
         }
         req.headers = base_headers;
 
-        let client = self.resolve_client(overrides)?;
-        let original_url_owned = original_url.clone();
-        let timeout = overrides.timeout;
+        let client = client.clone();
+        let original_url_owned = params.original_url.clone();
+        let timeout = params.overrides.timeout;
         let inner = Arc::clone(&self.inner);
 
         let terminal = move |logical_req: HttpRequest,
@@ -193,7 +212,7 @@ impl HttpDownloader {
             middlewares: &self.inner.middlewares,
             terminal: &terminal,
         };
-        next.run(req, stage).await
+        next.run(req, params.stage).await
     }
 
     /// Fetches a bounded UTF-8 text payload (e.g. release manifest), returning `Ok(None)` on `204`.
@@ -218,7 +237,7 @@ impl HttpDownloader {
         }
         if !status.is_success() {
             return Err(Error::HttpStatus {
-                url: url.to_string(),
+                url: redact_url(url),
                 status: status.as_u16(),
             });
         }
@@ -243,7 +262,7 @@ impl HttpDownloader {
         let status = resp.status();
         if !status.is_success() {
             return Err(Error::HttpStatus {
-                url: url.to_string(),
+                url: redact_url(url),
                 status: status.as_u16(),
             });
         }
@@ -264,7 +283,7 @@ impl HttpDownloader {
         ))
     }
 
-    fn resolve_client(&self, overrides: &TransferOverrides) -> Result<reqwest::Client> {
+    pub(crate) fn resolve_client(&self, overrides: &TransferOverrides) -> Result<reqwest::Client> {
         if overrides.proxy.is_none() {
             return Ok(self.inner.client.clone());
         }
@@ -274,4 +293,11 @@ impl HttpDownloader {
             self.inner.client_configurator.as_ref(),
         )
     }
+}
+
+pub(crate) struct OriginSendParams<'a> {
+    pub(crate) req: HttpRequest,
+    pub(crate) original_url: &'a Url,
+    pub(crate) stage: RequestStage,
+    pub(crate) overrides: &'a TransferOverrides,
 }

@@ -3,7 +3,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use super::coverage::RangeCoverage;
-use super::{DownloadedPackage, commit_verified_file, verify_reconstructed_file};
+use super::{DownloadedPackage, commit_verified_temp_file, verify_reconstructed_file};
 use crate::blockmap::BlockMap;
 use crate::cache::PackageCache;
 use crate::listener::{DownloadMode, DownloadSummary};
@@ -191,11 +191,11 @@ impl DiffSession {
         let temp_path = self.temp_file.into_temp_path();
 
         verify_reconstructed_file(&temp_path, &self.blockmap, &self.expectation)?;
-        let path = commit_verified_file(
+        let path = commit_verified_temp_file(
             &self.cache,
             &self.version,
             &self.expectation,
-            &temp_path,
+            temp_path,
             Some(&self.blockmap),
         )?;
 

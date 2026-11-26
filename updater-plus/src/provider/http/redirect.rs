@@ -6,6 +6,7 @@ use url::Url;
 
 use super::downloader::HttpDownloaderInner;
 use super::middleware::{HttpRequest, HttpRequestContext, HttpResponse, RequestStage};
+use super::wire::redact_url;
 use crate::{Error, Result};
 
 const MAX_REDIRECT_HOPS: usize = 10;
@@ -76,7 +77,7 @@ pub(crate) async fn execute_with_manual_redirects(
             if hops >= MAX_REDIRECT_HOPS {
                 return Err(Error::DifferentialTransfer(format!(
                     "exceeded maximum HTTP redirect hops ({MAX_REDIRECT_HOPS}) for {}",
-                    params.original_url
+                    redact_url(&params.original_url)
                 )));
             }
             current_url = current_url.join(location)?;

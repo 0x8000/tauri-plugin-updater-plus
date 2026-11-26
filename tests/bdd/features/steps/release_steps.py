@@ -76,6 +76,26 @@ def step_nginx_gzip_bomb(context, server_name: str, version: str) -> None:
 
 
 @given(
+    'Nginx server "{server_name:S}" replaces the blockmap for "{version:S}" with a stale blockmap from "{stale_version:S}"'
+)
+def step_nginx_stale_blockmap(context, server_name: str, version: str, stale_version: str) -> None:
+    driver = nginx_driver(context, server_name)
+    artifact = context.artifacts.path_for(version)
+    stale_source = context.artifacts.path_for(stale_version)
+    driver.replace_blockmap_with_stale_from(artifact.name, stale_source)
+
+
+@given(
+    'Nginx server "{server_name:S}" publishes a presigned manifest "{manifest_name:S}" for missing artifact "{version:S}" with query "{query:S}"'
+)
+def step_nginx_presigned_missing_manifest(
+    context, server_name: str, manifest_name: str, version: str, query: str
+) -> None:
+    driver = nginx_driver(context, server_name)
+    driver.publish_presigned_missing_manifest(manifest_name, version, query)
+
+
+@given(
     'Nginx server "{server_name:S}" publishes an unverified manifest "{manifest_name:S}" for version "{version:S}"'
 )
 def step_nginx_unverified_manifest(

@@ -1,16 +1,17 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use futures_util::StreamExt;
 use http::StatusCode;
 use http::header::{CONTENT_TYPE, RANGE};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, OnceCell, RwLock};
 use url::Url;
 
-use super::downloader::HttpDownloader;
+use super::downloader::{HttpDownloader, OriginSendParams};
 use super::middleware::{HttpRequest, RequestStage};
 use super::wire::{
     explicitly_rejects_ranges, format_range_header, read_multipart_partial, read_single_partial,
-    response_to_byte_stream, split_by_header_budget,
+    redact_url, response_to_byte_stream, split_by_header_budget,
 };
 use crate::multipart::ByteRangeParser;
 use crate::planner::ByteRange;
@@ -31,7 +32,10 @@ struct SessionHandle {
     downloader: HttpDownloader,
     original_url: Url,
     overrides: TransferOverrides,
+    client: Arc<OnceCell<reqwest::Client>>,
     effective: Arc<RwLock<EffectiveUrlState>>,
+    refresh_lock: Arc<Mutex<()>>,
+    degraded_to_single: Arc<AtomicBool>,
     requests: Arc<AtomicUsize>,
 }
 
@@ -55,13 +59,19 @@ impl HttpDownloadSession {
                 downloader,
                 original_url,
                 overrides,
+                client: Arc::new(OnceCell::new()),
                 effective: Arc::new(RwLock::new(effective)),
+                refresh_lock: Arc::new(Mutex::new(())),
+                degraded_to_single: Arc::new(AtomicBool::new(false)),
                 requests: Arc::new(AtomicUsize::new(0)),
             },
         }
     }
 
     fn should_start_single_range(&self) -> bool {
+        if self.handle.degraded_to_single.load(Ordering::SeqCst) {
+            return true;
+        }
         match self
             .handle
             .downloader
@@ -97,17 +107,22 @@ impl DownloadSession for HttpDownloadSession {
         let handle = self.handle.clone();
         Box::pin(async move {
             handle.requests.fetch_add(1, Ordering::SeqCst);
+            let client = handle.resolved_client().await?;
             let resp = handle
                 .downloader
-                .send(
-                    HttpRequest::get(handle.original_url.clone()),
-                    RequestStage::Artifact,
-                    &handle.overrides,
+                .send_with_client(
+                    &client,
+                    OriginSendParams {
+                        req: HttpRequest::get(handle.original_url.clone()),
+                        original_url: &handle.original_url,
+                        stage: RequestStage::Artifact,
+                        overrides: &handle.overrides,
+                    },
                 )
                 .await?;
             if !resp.status().is_success() {
                 return Err(Error::HttpStatus {
-                    url: handle.original_url.to_string(),
+                    url: redact_url(&handle.original_url),
                     status: resp.status().as_u16(),
                 });
             }
@@ -123,19 +138,38 @@ impl DownloadSession for HttpDownloadSession {
             }
             let sub_batches = split_by_header_budget(&ranges);
             if sub_batches.len() == 1 {
-                return handle.fetch_one_batch(&sub_batches[0]).await;
+                let result = handle.fetch_one_batch(&sub_batches[0]).await?;
+                if matches!(result, RangeFetchResult::DegradeToSingle) {
+                    handle.degraded_to_single.store(true, Ordering::SeqCst);
+                }
+                return Ok(result);
             }
 
+            let concurrency = handle
+                .downloader
+                .transfer_options()
+                .max_concurrent_ranges
+                .clamp(1, 16);
             let mut all_parts = Vec::with_capacity(ranges.len());
             for (idx, sub_batch) in sub_batches.iter().enumerate() {
                 match handle.fetch_one_batch(sub_batch).await? {
                     RangeFetchResult::Parts(parts) => all_parts.extend(parts),
                     RangeFetchResult::DegradeToSingle if idx == 0 => {
+                        handle.degraded_to_single.store(true, Ordering::SeqCst);
                         return Ok(RangeFetchResult::DegradeToSingle);
                     }
                     RangeFetchResult::DegradeToSingle => {
-                        for range in sub_batches[idx..].iter().flatten().copied() {
-                            match handle.fetch_one_batch(&[range]).await? {
+                        handle.degraded_to_single.store(true, Ordering::SeqCst);
+                        let remaining: Vec<ByteRange> =
+                            sub_batches[idx..].iter().flatten().copied().collect();
+                        let mut stream = futures_util::stream::iter(remaining)
+                            .map(|range| {
+                                let h = handle.clone();
+                                async move { h.fetch_one_batch(&[range]).await }
+                            })
+                            .buffer_unordered(concurrency);
+                        while let Some(res) = stream.next().await {
+                            match res? {
                                 RangeFetchResult::Parts(parts) => all_parts.extend(parts),
                                 other => return Ok(other),
                             }
@@ -157,30 +191,59 @@ impl DownloadSession for HttpDownloadSession {
 }
 
 impl SessionHandle {
+    async fn resolved_client(&self) -> Result<reqwest::Client> {
+        let client = self
+            .client
+            .get_or_try_init(|| async { self.downloader.resolve_client(&self.overrides) })
+            .await?;
+        Ok(client.clone())
+    }
+
     async fn fetch_one_batch(&self, ranges: &[ByteRange]) -> Result<RangeFetchResult> {
-        let snapshot = self.effective.read().await.clone();
+        let snapshot = { self.effective.read().await.clone() };
         let first = self.send_range_attempt(&snapshot.url, ranges).await;
 
-        let (outcome, final_url) =
-            if is_expired_redirect_error(&first, &snapshot.url, &self.original_url) {
-                let retry_url = {
-                    let mut guard = self.effective.write().await;
-                    if guard.generation == snapshot.generation {
-                        guard.url = self.original_url.clone();
-                        guard.generation = guard.generation.saturating_add(1);
-                        self.original_url.clone()
-                    } else {
-                        guard.url.clone()
-                    }
-                };
-                self.send_range_attempt(&retry_url, ranges).await?
-            } else {
-                first?
-            };
+        if is_expired_redirect_error(&first, &snapshot.url, &self.original_url) {
+            return self.refresh_and_retry(snapshot.generation, ranges).await;
+        }
 
+        let (outcome, final_url) = first?;
         if let Some(next_url) = final_url {
             let mut guard = self.effective.write().await;
-            if guard.url != next_url {
+            if guard.generation == snapshot.generation && guard.url != next_url {
+                guard.url = next_url;
+                guard.generation = guard.generation.saturating_add(1);
+            }
+        }
+        Ok(outcome)
+    }
+
+    async fn refresh_and_retry(
+        &self,
+        stale_generation: u64,
+        ranges: &[ByteRange],
+    ) -> Result<RangeFetchResult> {
+        let refreshed = {
+            let _refresh_guard = self.refresh_lock.lock().await;
+            let current = { self.effective.read().await.clone() };
+            if current.generation != stale_generation {
+                current
+            } else {
+                let (outcome, final_url) =
+                    self.send_range_attempt(&self.original_url, ranges).await?;
+                {
+                    let mut guard = self.effective.write().await;
+                    guard.url = final_url.unwrap_or_else(|| self.original_url.clone());
+                    guard.generation = guard.generation.saturating_add(1);
+                }
+                return Ok(outcome);
+            }
+        };
+
+        let (outcome, final_url) = self.send_range_attempt(&refreshed.url, ranges).await?;
+        if let Some(next_url) = final_url {
+            let mut guard = self.effective.write().await;
+            if guard.generation == refreshed.generation && guard.url != next_url {
                 guard.url = next_url;
                 guard.generation = guard.generation.saturating_add(1);
             }
@@ -194,16 +257,20 @@ impl SessionHandle {
         ranges: &[ByteRange],
     ) -> Result<(RangeFetchResult, Option<Url>)> {
         self.requests.fetch_add(1, Ordering::SeqCst);
+        let client = self.resolved_client().await?;
         let mut req = HttpRequest::get(request_url.clone());
         req.headers.insert(RANGE, format_range_header(ranges)?);
 
         let resp = self
             .downloader
-            .send_with_origin(
-                req,
-                &self.original_url,
-                RequestStage::Artifact,
-                &self.overrides,
+            .send_with_client(
+                &client,
+                OriginSendParams {
+                    req,
+                    original_url: &self.original_url,
+                    stage: RequestStage::Artifact,
+                    overrides: &self.overrides,
+                },
             )
             .await?;
         let final_url = resp.final_url.clone();
@@ -231,7 +298,7 @@ impl SessionHandle {
                 return Ok((RangeFetchResult::DegradeToSingle, None));
             }
             return Err(Error::HttpStatus {
-                url: request_url.to_string(),
+                url: redact_url(request_url),
                 status: status.as_u16(),
             });
         }

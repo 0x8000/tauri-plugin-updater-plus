@@ -106,7 +106,10 @@ impl UpdaterBuilder {
         self
     }
 
-    /// Replaces all HTTP request headers sent to manifest and artifact endpoints.
+    /// Replaces all transport metadata entries with UTF-8 entries from `headers`.
+    ///
+    /// Note: non-UTF-8 header values are skipped; prefer [`Self::header`] for strict validation
+    /// and additive updates.
     #[cfg(feature = "http")]
     pub fn headers(mut self, headers: HeaderMap) -> Self {
         self.overrides.metadata = headers
@@ -149,6 +152,13 @@ impl UpdaterBuilder {
         if !(0.0..=1.0).contains(&self.config.full_download_threshold) {
             return Err(Error::InvalidConfig(
                 "fullDownloadThreshold must be within 0.0..=1.0".into(),
+            ));
+        }
+        if let Some(pubkey) = &self.config.pubkey
+            && pubkey.trim().is_empty()
+        {
+            return Err(Error::InvalidConfig(
+                "configured pubkey must not be empty".into(),
             ));
         }
         if let Some(windows) = &self.config.windows {

@@ -23,6 +23,8 @@ use crate::updater::UpdaterBuilder;
 use crate::{Error, Result};
 
 mod github;
+mod github_public;
+mod guards;
 mod sigv4;
 
 pub(super) fn synthetic_v1_v2() -> (Vec<u8>, Vec<u8>) {
@@ -99,6 +101,24 @@ async fn middleware_retries_transient_503_and_strips_both_static_and_dynamic_sen
     let v2_art = BlockMap::generate(v2.as_slice(), "file", ChunkerConfig::default()).expect("map");
     let bm_bytes = Arc::new(v2_art.blockmap.to_gzip_bytes().expect("gz"));
 
+    #[derive(Debug)]
+    struct InjectMiddlewareSecret;
+
+    impl HttpMiddleware for InjectMiddlewareSecret {
+        fn handle<'a>(
+            &'a self,
+            mut req: HttpRequest,
+            stage: RequestStage,
+            next: HttpNext<'a>,
+        ) -> BoxFuture<'a, Result<HttpResponse>> {
+            req.headers.insert(
+                HeaderName::from_static("x-middleware-secret"),
+                HeaderValue::from_static("dyn-mw-secret"),
+            );
+            next.run(req, stage)
+        }
+    }
+
     #[derive(Clone)]
     struct CdnState {
         artifact: Arc<Vec<u8>>,
@@ -108,6 +128,7 @@ async fn middleware_retries_transient_503_and_strips_both_static_and_dynamic_sen
     async fn serve_cdn(State(state): State<CdnState>, headers: HeaderMap) -> Response {
         if headers.contains_key("x-api-key")
             || headers.contains_key("x-static-secret")
+            || headers.contains_key("x-middleware-secret")
             || headers.contains_key(AUTHORIZATION)
         {
             state.leaked_custom_header.fetch_add(1, Ordering::SeqCst);
@@ -153,6 +174,10 @@ async fn middleware_retries_transient_503_and_strips_both_static_and_dynamic_sen
         if headers.get("x-api-key").and_then(|v| v.to_str().ok()) != Some("top-secret-key")
             || headers.get("x-static-secret").and_then(|v| v.to_str().ok())
                 != Some("static-origin-secret")
+            || headers
+                .get("x-middleware-secret")
+                .and_then(|v| v.to_str().ok())
+                != Some("dyn-mw-secret")
         {
             return (StatusCode::UNAUTHORIZED, "missing origin credentials").into_response();
         }
@@ -206,13 +231,17 @@ async fn middleware_retries_transient_503_and_strips_both_static_and_dynamic_sen
     });
 
     let retry_attempts = Arc::new(AtomicUsize::new(0));
+    let saw_cross_origin_ctx = Arc::new(AtomicUsize::new(0));
+    let saw_cross_origin_clone = Arc::clone(&saw_cross_origin_ctx);
     let downloader = HttpDownloader::builder()
         .header("x-static-secret", "static-origin-secret")
         .expect("header")
         .sensitive_header(HeaderName::from_static("x-static-secret"))
-        .sensitive_header(HeaderName::from_static("x-api-key"))
-        .with_authorizer(|ctx, req| {
-            if !ctx.is_cross_origin_redirect {
+        .sensitive_header(HeaderName::from_static("x-middleware-secret"))
+        .with_authorizer(move |ctx, req| {
+            if ctx.is_cross_origin_redirect {
+                saw_cross_origin_clone.fetch_add(1, Ordering::SeqCst);
+            } else {
                 req.headers.insert(
                     HeaderName::from_static("x-api-key"),
                     HeaderValue::from_static("top-secret-key"),
@@ -220,6 +249,7 @@ async fn middleware_retries_transient_503_and_strips_both_static_and_dynamic_sen
             }
             Ok(())
         })
+        .middleware(Arc::new(InjectMiddlewareSecret))
         .middleware(Arc::new(Retry503Middleware {
             max_retries: 2,
             attempts: Arc::clone(&retry_attempts),
@@ -260,6 +290,7 @@ async fn middleware_retries_transient_503_and_strips_both_static_and_dynamic_sen
         cdn_state_check.leaked_custom_header.load(Ordering::SeqCst),
         0
     );
+    assert!(saw_cross_origin_ctx.load(Ordering::SeqCst) >= 1);
     assert!(origin_state_ref.origin_auth_hits.load(Ordering::SeqCst) >= 3);
     assert!(retry_attempts.load(Ordering::SeqCst) >= 4);
 

@@ -323,5 +323,12 @@ async fn failover_provider_handles_nested_routing_validation_short_circuit_and_a
         .resolve_release(&default_ctx(true))
         .await
         .expect_err("all fail must error");
-    assert!(err.to_string().contains("last error"), "got {err}");
+    assert!(
+        matches!(
+            err,
+            Error::Transport(ref t)
+                if t.kind == TransportErrorKind::Unavailable && t.message == "last error"
+        ),
+        "expected Unavailable TransportError('last error'), got {err:?}"
+    );
 }

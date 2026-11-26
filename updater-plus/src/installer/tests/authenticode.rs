@@ -84,6 +84,14 @@ fn parses_rfc2253_dn_and_matches_publisher_names_strictly() {
     assert_eq!(parsed.get("L").map(String::as_str), Some("München"));
     assert_eq!(parsed.get("C").map(String::as_str), Some("DE"));
 
+    let escaped_quote =
+        WindowsAuthenticodeVerifier::parse_dn(r#"CN="Acme \"Pro\", Inc.", O="A\\B""#);
+    assert_eq!(
+        escaped_quote.get("CN").map(String::as_str),
+        Some(r#"Acme "Pro", Inc."#)
+    );
+    assert_eq!(escaped_quote.get("O").map(String::as_str), Some(r"A\B"));
+
     assert!(WindowsAuthenticodeVerifier::is_valid_publisher_name_dn(
         "CN=Acme, O=Acme, C=US"
     ));

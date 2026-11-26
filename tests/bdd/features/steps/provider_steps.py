@@ -65,6 +65,33 @@ def step_cdn_publish_github(context, gateway_name: str, version: str, token: str
     )
 
 
+@given(
+    'CDN gateway "{gateway_name:S}" publishes private GitHub release "{version:S}" with token "{token:S}" pointing to external CDN'
+)
+def step_cdn_publish_github_external(context, gateway_name: str, version: str, token: str) -> None:
+    driver = cdn_driver(context, gateway_name)
+    driver.set_mode("github_private", expected_token=token)
+    artifact = context.artifacts.path_for(version)
+    driver.publish_github_external_artifact_release(
+        artifact_path=artifact,
+        version=version,
+        notes="Private GitHub release with external CDN",
+    )
+
+
+@given('CDN gateway "{gateway_name:S}" returns 403 for missing blockmaps')
+def step_cdn_missing_blockmap_403(context, gateway_name: str) -> None:
+    driver = cdn_driver(context, gateway_name)
+    driver.set_mode("s3_sigv4", missing_blockmap_403=True)
+
+
+@given('CDN gateway "{gateway_name:S}" removes the blockmap for "{version:S}"')
+def step_cdn_remove_blockmap(context, gateway_name: str, version: str) -> None:
+    driver = cdn_driver(context, gateway_name)
+    artifact = context.artifacts.path_for(version)
+    driver.remove_blockmap(artifact.name)
+
+
 @given('the updater uses GitHubProvider against "{gateway_name:S}" with token "{token:S}"')
 def step_use_github_provider(context, gateway_name: str, token: str) -> None:
     driver = cdn_driver(context, gateway_name)
@@ -230,6 +257,18 @@ def step_assert_sigv4_telemetry(
     assert stats["sigv4_rejected_requests"] == expected_rejected, f"rejected SigV4 reqs: {stats}"
     assert stats["cdn_multi_200"] == 0, f"S3Provider must avoid multi-range probes: {stats}"
     assert stats["cdn_single_206"] >= 4, f"expected >=4 single-range 206s: {stats}"
+
+
+@then(
+    'CDN gateway "{gateway_name:S}" verified at least {min_verified:d} SigV4 full-fallback requests and rejected {expected_rejected:d}'
+)
+def step_assert_sigv4_full_fallback_telemetry(
+    context, gateway_name: str, min_verified: int, expected_rejected: int
+) -> None:
+    stats = cdn_driver(context, gateway_name).telemetry()
+    assert stats["sigv4_verified_requests"] >= min_verified, f"unexpected SigV4 stats: {stats}"
+    assert stats["sigv4_rejected_requests"] == expected_rejected, f"rejected SigV4 reqs: {stats}"
+    assert stats["cdn_multi_200"] == 0, f"S3Provider must avoid multi-range probes: {stats}"
 
 
 @then(

@@ -85,7 +85,47 @@ fn sigv4_authorizer_produces_exact_deterministic_aws4_signature_with_and_without
         .get(AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .expect("auth");
-    assert!(no_sts_auth.contains("SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature="));
+    assert_eq!(
+        no_sts_auth,
+        "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20231114/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=abc9208d01e2383d1826b1e46911475327eed21dab1d07df93305b9f0dd8b24b"
+    );
+
+    // Custom `x-amz-*` headers must be signed, and `%2F` inside path segments must stay encoded.
+    let mut encoded_req = HttpRequest::get(
+        Url::parse("https://releases.s3.us-east-1.amazonaws.com/dir/a%2Fb.bin").expect("url"),
+    );
+    encoded_req.headers.insert(
+        http::header::HeaderName::from_static("x-amz-request-payer"),
+        http::HeaderValue::from_static("requester"),
+    );
+    authorizer
+        .sign_request_at(&mut encoded_req, &no_sts, fixed_time)
+        .expect("sign encoded path");
+    let encoded_auth = encoded_req
+        .headers
+        .get(AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .expect("auth");
+    assert!(
+        encoded_auth
+            .contains("SignedHeaders=host;x-amz-content-sha256;x-amz-date;x-amz-request-payer"),
+        "custom x-amz-* header must be signed: {encoded_auth}"
+    );
+    let mut slash_req = HttpRequest::get(
+        Url::parse("https://releases.s3.us-east-1.amazonaws.com/dir/a/b.bin").expect("url"),
+    );
+    slash_req.headers.insert(
+        http::header::HeaderName::from_static("x-amz-request-payer"),
+        http::HeaderValue::from_static("requester"),
+    );
+    authorizer
+        .sign_request_at(&mut slash_req, &no_sts, fixed_time)
+        .expect("sign slash path");
+    assert_ne!(
+        encoded_req.headers.get(AUTHORIZATION),
+        slash_req.headers.get(AUTHORIZATION),
+        "`%2F` in an S3 key must produce a distinct signature from a path separator `/`"
+    );
 }
 
 #[tokio::test]
@@ -207,4 +247,86 @@ async fn s3_provider_signs_every_manifest_blockmap_and_single_range_request() {
     assert_eq!(std::fs::read(&pkg.path).expect("read"), v2);
     assert_eq!(s3_check.multi_range_hits.load(Ordering::SeqCst), 0);
     assert!(s3_check.signed_hits.load(Ordering::SeqCst) >= 4);
+}
+
+#[tokio::test]
+async fn sigv4_authorizer_strips_aws_headers_on_cross_origin_redirect() {
+    let cdn_leaked = Arc::new(AtomicUsize::new(0));
+    let cdn_leaked_srv = Arc::clone(&cdn_leaked);
+    let cdn_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind cdn");
+    let cdn_url = Url::parse(&format!(
+        "http://{}/cdn/file",
+        cdn_listener.local_addr().expect("addr")
+    ))
+    .expect("cdn url");
+    tokio::spawn(async move {
+        let app = Router::new().route(
+            "/cdn/file",
+            get(move |headers: HeaderMap| {
+                let leaked = Arc::clone(&cdn_leaked_srv);
+                async move {
+                    if headers.contains_key(AUTHORIZATION)
+                        || headers.contains_key("x-amz-security-token")
+                        || headers.contains_key("x-amz-date")
+                        || headers.contains_key("x-amz-content-sha256")
+                    {
+                        leaked.fetch_add(1, Ordering::SeqCst);
+                        return (StatusCode::BAD_REQUEST, "sigv4 headers leaked").into_response();
+                    }
+                    (StatusCode::OK, b"ok".to_vec()).into_response()
+                }
+            }),
+        );
+        let _ = axum::serve(cdn_listener, app).await;
+    });
+
+    let origin_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind origin");
+    let origin_url = Url::parse(&format!(
+        "http://{}/item",
+        origin_listener.local_addr().expect("addr")
+    ))
+    .expect("origin url");
+    tokio::spawn(async move {
+        let app = Router::new().route(
+            "/item",
+            get(move |headers: HeaderMap| {
+                let target = cdn_url.clone();
+                async move {
+                    if !headers.contains_key(AUTHORIZATION)
+                        || !headers.contains_key("x-amz-security-token")
+                    {
+                        return (StatusCode::FORBIDDEN, "missing sigv4").into_response();
+                    }
+                    axum::response::Redirect::temporary(target.as_str()).into_response()
+                }
+            }),
+        );
+        let _ = axum::serve(origin_listener, app).await;
+    });
+
+    let creds = Arc::new(StaticAwsCredentials(AwsCredentials {
+        access_key_id: "AKIA_REDIRECT".into(),
+        secret_access_key: "SECRET_REDIRECT".into(),
+        session_token: Some("STS_REDIRECT".into()),
+    }));
+    let dl = super::super::HttpDownloader::builder()
+        .authorizer(Arc::new(SigV4Authorizer::s3("us-east-1", creds)))
+        .build()
+        .expect("dl");
+    let bytes = dl
+        .fetch_bytes_bounded(
+            &origin_url,
+            super::super::RequestStage::Blockmap,
+            1024,
+            "item",
+            &crate::provider::TransferOverrides::default(),
+        )
+        .await
+        .expect("redirected fetch succeeds");
+    assert_eq!(bytes.as_ref(), b"ok");
+    assert_eq!(cdn_leaked.load(Ordering::SeqCst), 0);
 }

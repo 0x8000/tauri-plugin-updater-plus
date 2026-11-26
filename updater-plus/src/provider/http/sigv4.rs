@@ -166,23 +166,28 @@ impl SigV4Authorizer {
             req.headers.remove("x-amz-security-token");
         }
 
-        let mut signed_pairs: Vec<(String, String)> = vec![
-            ("host".into(), host),
-            ("x-amz-content-sha256".into(), UNSIGNED_PAYLOAD.into()),
-            ("x-amz-date".into(), amz_date.clone()),
-        ];
-        if let Some(token) = &creds.session_token {
-            signed_pairs.push(("x-amz-security-token".into(), token.trim().to_string()));
+        let mut signed_map: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for (name, value) in &req.headers {
+            let lower = name.as_str().to_ascii_lowercase();
+            if lower == "host" || lower.starts_with("x-amz-") {
+                let raw = value.to_str().map_err(|err| {
+                    Error::InvalidHeader(format!("non-ASCII signed header '{lower}': {err}"))
+                })?;
+                signed_map
+                    .entry(lower)
+                    .or_default()
+                    .push(raw.trim().to_string());
+            }
         }
-        signed_pairs.sort_by(|a, b| a.0.cmp(&b.0));
 
-        let canonical_headers: String = signed_pairs
+        let canonical_headers: String = signed_map
             .iter()
-            .map(|(k, v)| format!("{k}:{v}\n"))
+            .map(|(k, vals)| format!("{k}:{}\n", vals.join(",")))
             .collect();
-        let signed_headers: String = signed_pairs
-            .iter()
-            .map(|(k, _)| k.as_str())
+        let signed_headers: String = signed_map
+            .keys()
+            .map(String::as_str)
             .collect::<Vec<_>>()
             .join(";");
 
@@ -317,9 +322,15 @@ fn canonical_s3_uri(path: &str) -> String {
     if path.is_empty() {
         return "/".into();
     }
-    // `url::Url::path()` is already percent-encoded; decode-then-encode avoids double-encoding.
-    let decoded = percent_encoding::percent_decode_str(path).decode_utf8_lossy();
-    aws_uri_encode(&decoded, false)
+    // Split on `/` before decoding each segment so percent-encoded slashes (`%2F`) inside
+    // an S3 object key stay encoded as `%2F` rather than turning into path separators.
+    path.split('/')
+        .map(|segment| {
+            let decoded = percent_encoding::percent_decode_str(segment).decode_utf8_lossy();
+            aws_uri_encode(&decoded, true)
+        })
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 fn canonical_query_string(url: &Url) -> String {
