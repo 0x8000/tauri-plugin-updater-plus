@@ -3,7 +3,7 @@ resolver = "2"
 members = ["updater-plus", "tauri-plugin-updater-plus"]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 rust-version = "1.95"
 license = "Apache-2.0"
@@ -44,7 +44,7 @@ tokio = { version = "1", features = [
   "time",
 ] }
 tracing = "0.1"
-updater-plus = { version = "0.5.0", path = "updater-plus", default-features = false }
+updater-plus = { version = "0.5.1", path = "updater-plus", default-features = false }
 url = { version = "2", features = ["serde"] }
 windows-sys = { version = "0.60", features = [
   "Win32_Foundation",

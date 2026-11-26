@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/0x8000/updater-plus/compare/v0.5.0...v0.5.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* harden security, concurrency, installers, and BDD coverage ([89c3723](https://github.com/0x8000/updater-plus/commit/89c3723ea54113384edb058f4897996b96f21653))
+
 ## [0.5.0](https://github.com/0x8000/updater-plus/compare/v0.4.0...v0.5.0) (2026-11-25)
 
 
