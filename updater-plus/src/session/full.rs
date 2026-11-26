@@ -1,6 +1,6 @@
 use std::io::Write;
 
-use super::{DownloadedPackage, commit_verified_file};
+use super::{DownloadedPackage, commit_verified_temp_file};
 use crate::Result;
 use crate::blockmap::BlockMap;
 use crate::cache::PackageCache;
@@ -72,11 +72,11 @@ impl FullSession {
         let temp_path = self.temp_file.into_temp_path();
 
         ArtifactVerifier::verify_file(&temp_path, &self.expectation)?;
-        let path = commit_verified_file(
+        let path = commit_verified_temp_file(
             &self.cache,
             &self.version,
             &self.expectation,
-            &temp_path,
+            temp_path,
             known_blockmap,
         )?;
 

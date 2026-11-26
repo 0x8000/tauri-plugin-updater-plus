@@ -97,6 +97,26 @@ class NginxReleaseDriver:
         if target.exists():
             target.unlink()
 
+    def replace_blockmap_with_stale_from(
+        self, artifact_filename: str, stale_source_path: Path
+    ) -> None:
+        target_map = self.container.releases_dir / f"{artifact_filename}.blockmap"
+        self.cli.generate(input_file=stale_source_path, output_file=target_map)
+        target_map.chmod(0o644)
+
+    def publish_presigned_missing_manifest(
+        self, manifest_name: str, version: str, query: str
+    ) -> str:
+        return self.publish_raw_json(
+            manifest_name,
+            {
+                "version": version,
+                "url": f"{self.base_url}missing-{version}.AppImage?{query}",
+                "sha512": "dummyHashFor404Check==",
+                "size": 1024,
+            },
+        )
+
     def access_entries(self, uri_suffix: str | None = None) -> list[NginxAccessEntry]:
         log_file = self.container.logs_dir / "access.jsonl"
         if not log_file.is_file():
@@ -233,6 +253,48 @@ class CdnOriginDriver:
                     "102": artifact_path.name,
                     "103": f"{artifact_path.name}.blockmap",
                 },
+            },
+            timeout=5.0,
+        ).raise_for_status()
+
+    def remove_blockmap(self, artifact_filename: str) -> None:
+        target = self.gateway.releases_dir / f"{artifact_filename}.blockmap"
+        if target.exists():
+            target.unlink()
+
+    def publish_github_external_artifact_release(
+        self,
+        *,
+        artifact_path: Path,
+        version: str,
+        manifest_name: str = "latest.json",
+        notes: str | None = None,
+    ) -> None:
+        dest_artifact = self.gateway.releases_dir / artifact_path.name
+        shutil.copy2(artifact_path, dest_artifact)
+        dest_artifact.chmod(0o644)
+
+        dest_blockmap = self.gateway.releases_dir / f"{artifact_path.name}.blockmap"
+        dest_manifest = self.gateway.releases_dir / manifest_name
+        external_url = f"{self.gateway.cdn_base_url}{artifact_path.name}"
+        self.cli.manifest(
+            input_file=dest_artifact,
+            version=version,
+            url=external_url,
+            output_file=dest_manifest,
+            manifest_format="tauri",
+            notes=notes,
+            blockmap_output=dest_blockmap,
+        )
+        dest_blockmap.chmod(0o644)
+        dest_manifest.chmod(0o644)
+        # Only expose the manifest asset in the GitHub release so the external artifact/blockmap
+        # URLs are fetched directly from the third-party host without remapping.
+        requests.post(
+            f"{self.gateway.admin_base_url}/config",
+            json={
+                "github_tag": f"v{version}",
+                "github_assets": {"101": manifest_name},
             },
             timeout=5.0,
         ).raise_for_status()

@@ -27,7 +27,7 @@ web assets or Lua scripts):
 
 ```toml
 [dependencies]
-updater-plus = { version = "0.4", default-features = false, features = ["http"] }
+updater-plus = { version = "0.5", default-features = false, features = ["http"] }
 ```
 
 Use with built-in OS installers or implement `UpdateInstaller` to plug in your

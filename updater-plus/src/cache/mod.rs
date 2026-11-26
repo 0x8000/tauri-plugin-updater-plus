@@ -72,9 +72,31 @@ impl PackageCache {
     }
 
     /// Commits a verified downloaded package and its blockmap into the cache atomically.
+    ///
+    /// Leaves `package_file` intact on all platforms by staging a copy inside the cache directory
+    /// before atomically replacing the active cached package.
     pub fn commit(
         &self,
         package_file: &Path,
+        blockmap: &BlockMap,
+        state: &CachedPackageState,
+    ) -> Result<PathBuf> {
+        std::fs::create_dir_all(&self.directory)?;
+        let staging_pkg = tempfile::Builder::new()
+            .prefix(".staging-pkg-")
+            .tempfile_in(&self.directory)?;
+        {
+            let mut src = std::fs::File::open(package_file)?;
+            let mut dst = staging_pkg.as_file();
+            std::io::copy(&mut src, &mut dst)?;
+            dst.sync_all()?;
+        }
+        self.commit_temp_path(staging_pkg.into_temp_path(), blockmap, state)
+    }
+
+    pub(crate) fn commit_temp_path(
+        &self,
+        staging_pkg: tempfile::TempPath,
         blockmap: &BlockMap,
         state: &CachedPackageState,
     ) -> Result<PathBuf> {
@@ -83,14 +105,6 @@ impl PackageCache {
         let blockmap_bytes = blockmap.to_gzip_bytes()?;
         let state_bytes = serde_json::to_vec_pretty(state)?;
         std::fs::create_dir_all(&self.directory)?;
-
-        let staging_pkg = tempfile::Builder::new()
-            .prefix(".staging-pkg-")
-            .tempfile_in(&self.directory)?
-            .into_temp_path();
-        if std::fs::rename(package_file, &staging_pkg).is_err() {
-            std::fs::copy(package_file, &staging_pkg)?;
-        }
 
         let mut staging_map = tempfile::Builder::new()
             .prefix(".staging-map-")
@@ -125,12 +139,7 @@ impl PackageCache {
             size: artifact.size,
             sha512: Some(artifact.sha512),
         };
-        let copy_staging = tempfile::Builder::new()
-            .prefix(".seed-pkg-")
-            .tempfile_in(&self.directory)?
-            .into_temp_path();
-        std::fs::copy(package_path, &copy_staging)?;
-        let stored_path = self.commit(&copy_staging, &artifact.blockmap, &state)?;
+        let stored_path = self.commit(package_path, &artifact.blockmap, &state)?;
         Ok(LocalBasePackage {
             package_path: stored_path,
             blockmap: artifact.blockmap,

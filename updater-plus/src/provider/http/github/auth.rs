@@ -1,13 +1,25 @@
+use std::fmt;
+
 use http::HeaderValue;
 use http::header::{ACCEPT, AUTHORIZATION, HeaderName};
+use url::Origin;
 
 use super::super::middleware::{HttpAuthorizer, HttpRequest, HttpRequestContext, RequestStage};
 use crate::provider::BoxFuture;
 use crate::{Error, Result};
 
-#[derive(Debug)]
 pub(super) struct GitHubAuthorizer {
     pub(super) token: Option<String>,
+    pub(super) api_origin: Origin,
+}
+
+impl fmt::Debug for GitHubAuthorizer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GitHubAuthorizer")
+            .field("has_token", &self.token.is_some())
+            .field("api_origin", &self.api_origin)
+            .finish()
+    }
 }
 
 impl HttpAuthorizer for GitHubAuthorizer {
@@ -18,8 +30,8 @@ impl HttpAuthorizer for GitHubAuthorizer {
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             // Never leak GitHub API tokens or API-only Accept headers onto cross-origin CDN hops
-            // (such as `objects.githubusercontent.com`).
-            if ctx.is_cross_origin_redirect {
+            // or third-party hosts that do not match the configured GitHub API origin.
+            if ctx.is_cross_origin_redirect || ctx.current_url.origin() != self.api_origin {
                 return Ok(());
             }
             if let Some(token) = &self.token {

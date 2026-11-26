@@ -45,6 +45,9 @@ pub struct ReleasePlatform {
 
 impl ReleasePlatform {
     /// Resolves the `.blockmap` URL, falling back to Electron's `{url}.blockmap` suffix convention.
+    ///
+    /// When deriving from `self.url`, query strings and fragments are stripped so path-bound
+    /// presigned artifact tokens are never forwarded to a `.blockmap` path.
     pub fn resolved_blockmap_url(&self) -> Result<Url> {
         if let Some(url) = &self.blockmap_url {
             return Ok(url.clone());
@@ -52,6 +55,8 @@ impl ReleasePlatform {
         let mut derived = self.url.clone();
         let path = format!("{}.blockmap", derived.path());
         derived.set_path(&path);
+        derived.set_query(None);
+        derived.set_fragment(None);
         Ok(derived)
     }
 }

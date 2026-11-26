@@ -32,6 +32,7 @@ http = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 tauri.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 updater-plus = { workspace = true, features = ["engine"] }

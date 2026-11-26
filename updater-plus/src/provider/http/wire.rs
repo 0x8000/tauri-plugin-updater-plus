@@ -2,6 +2,7 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use http::HeaderMap;
 use http::header::{ACCEPT_RANGES, CONTENT_RANGE, HeaderValue};
+use url::Url;
 
 use crate::multipart::ByteRangeParser;
 use crate::planner::ByteRange;
@@ -11,6 +12,21 @@ use crate::{Error, Result};
 const MAX_RANGE_HEADER_BYTES: usize = 6 * 1024;
 const MULTIPART_FRAMING_SLACK_PER_PART: u64 = 1024;
 const MULTIPART_FRAMING_BASE_SLACK: u64 = 64 * 1024;
+
+/// Formats `url` with any password or query string redacted so presigned tokens are never logged.
+pub(crate) fn redact_url(url: &Url) -> String {
+    let mut sanitized = url.clone();
+    if sanitized.password().is_some() {
+        let _ = sanitized.set_password(Some("redacted"));
+    }
+    let has_query = sanitized.query().is_some();
+    sanitized.set_query(None);
+    if has_query {
+        format!("{sanitized}?<redacted>")
+    } else {
+        sanitized.to_string()
+    }
+}
 
 pub(crate) async fn read_bounded_body(
     response: reqwest::Response,

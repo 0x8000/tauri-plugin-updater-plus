@@ -212,8 +212,49 @@ fn diff_session_rejects_incomplete_or_tampered_transfer_and_preserves_cache() {
 fn full_session_verifies_streams_rejects_tampering_and_unverified_policy() {
     assert!(matches!(
         VerifyPolicy::from_expectation(&VerifyExpectation::default()),
-        Err(Error::InvalidConfig(_))
+        Err(Error::InvalidConfig(ref msg)) if msg.contains("sha512 or minisign pubkey")
     ));
+    assert!(matches!(
+        VerifyPolicy::from_expectation(&VerifyExpectation {
+            pubkey: Some("pk-b64".into()),
+            signature: None,
+            ..Default::default()
+        }),
+        Err(Error::Signature(ref msg)) if msg.contains("missing signature")
+    ));
+    assert_eq!(
+        VerifyPolicy::from_expectation(&VerifyExpectation {
+            pubkey: Some("pk-b64".into()),
+            signature: Some("sig-b64".into()),
+            announced_version: "1.2.3".into(),
+            require_signed_version: true,
+            ..Default::default()
+        })
+        .expect("minisign policy"),
+        VerifyPolicy::Minisign {
+            pubkey: "pk-b64".into(),
+            signature: "sig-b64".into(),
+            announced_version: "1.2.3".into(),
+            require_signed_version: true,
+        }
+    );
+    assert_eq!(
+        VerifyPolicy::from_expectation(&VerifyExpectation {
+            sha512: Some("hash-b64".into()),
+            pubkey: Some("pk-b64".into()),
+            signature: Some("sig-b64".into()),
+            announced_version: "1.2.3".into(),
+            require_signed_version: false,
+        })
+        .expect("both policy"),
+        VerifyPolicy::Both {
+            sha512: "hash-b64".into(),
+            pubkey: "pk-b64".into(),
+            signature: "sig-b64".into(),
+            announced_version: "1.2.3".into(),
+            require_signed_version: false,
+        }
+    );
 
     let payload = b"full push payload delivered over arbitrary bus".to_vec();
     let sha512 = ArtifactVerifier::sha512_bytes(&payload);

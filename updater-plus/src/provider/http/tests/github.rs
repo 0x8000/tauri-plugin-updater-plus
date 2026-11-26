@@ -181,12 +181,17 @@ async fn github_provider_resolves_private_release_assets_and_validates_config() 
         let _ = axum::serve(api_listener, app).await;
     });
 
-    let provider = Arc::new(
-        GitHubProvider::builder("acme", "app")
-            .token("ghp_test_token")
-            .api_base_url(api_base)
-            .build()
-            .expect("github provider"),
+    let builder = GitHubProvider::builder("acme", "app")
+        .token("ghp_test_token")
+        .api_base_url(api_base.clone());
+    assert!(
+        !format!("{builder:?}").contains("ghp_test_token"),
+        "GitHubProviderBuilder Debug output must redact token"
+    );
+    let provider = Arc::new(builder.build().expect("github provider"));
+    assert!(
+        !format!("{provider:?}").contains("ghp_test_token"),
+        "GitHubProvider Debug output must redact token"
     );
 
     let temp = tempfile::tempdir().expect("temp dir");
@@ -211,4 +216,27 @@ async fn github_provider_resolves_private_release_assets_and_validates_config() 
     assert_eq!(pkg.summary.mode, DownloadMode::Differential);
     assert_eq!(std::fs::read(&pkg.path).expect("read"), v2);
     assert_eq!(gh_cdn_check.leaked.load(Ordering::SeqCst), 0);
+
+    // Wrong token must surface 401 Unauthorized.
+    let bad_provider = Arc::new(
+        GitHubProvider::builder("acme", "app")
+            .token("wrong_token")
+            .api_base_url(api_base)
+            .build()
+            .expect("bad provider"),
+    );
+    let bad_updater = UpdaterBuilder::new(
+        "myapp".into(),
+        Version::new(0, 1, 0),
+        temp.path().join("app"),
+        PackageCache::with_appimage_fallback(temp.path().join("cache2"), None),
+    )
+    .target("linux-x86_64")
+    .provider(bad_provider)
+    .build()
+    .expect("bad updater");
+    assert!(matches!(
+        bad_updater.check().await,
+        Err(Error::HttpStatus { status: 401, .. })
+    ));
 }

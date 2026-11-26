@@ -190,16 +190,19 @@ impl DownloadPlan {
     }
 
     fn pick_nearest_offset(offsets: &[u64], cursor: u64) -> u64 {
-        let mut best = offsets[0];
-        let mut best_distance = best.abs_diff(cursor);
-        for &candidate in &offsets[1..] {
-            let distance = candidate.abs_diff(cursor);
-            if distance < best_distance {
-                best = candidate;
-                best_distance = distance;
+        let pos = offsets.partition_point(|&candidate| candidate < cursor);
+        match (pos.checked_sub(1).map(|i| offsets[i]), offsets.get(pos)) {
+            (Some(prev), Some(&next)) => {
+                if next.abs_diff(cursor) < prev.abs_diff(cursor) {
+                    next
+                } else {
+                    prev
+                }
             }
+            (Some(prev), None) => prev,
+            (None, Some(&next)) => next,
+            (None, None) => 0,
         }
-        best
     }
 
     fn push_copy(

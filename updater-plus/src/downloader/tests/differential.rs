@@ -26,12 +26,9 @@ async fn differential_multipart_download_reconstructs_exact_artifact_with_huge_s
 
     let temp = tempfile::tempdir().expect("temp dir");
     let cache = seeded_cache(&temp, &v1);
-    let downloader = DifferentialDownloader::new(
-        reqwest::Client::new(),
-        HeaderMap::new(),
-        cache,
-        TransferOptions::default(),
-    );
+    let downloader =
+        DifferentialDownloader::http(HeaderMap::new(), cache, TransferOptions::default())
+            .expect("downloader");
     let request = make_request(&base_url, v2.len() as u64, Some(v2_artifact.sha512));
     let recorder = EventRecorder(Mutex::new(Vec::new()));
 
@@ -74,12 +71,9 @@ async fn degrades_gracefully_from_multipart_to_single_range_and_splits_batches()
 
     let temp = tempfile::tempdir().expect("temp dir");
     let cache = seeded_cache(&temp, &v1);
-    let downloader = DifferentialDownloader::new(
-        reqwest::Client::new(),
-        HeaderMap::new(),
-        cache,
-        TransferOptions::default(),
-    );
+    let downloader =
+        DifferentialDownloader::http(HeaderMap::new(), cache, TransferOptions::default())
+            .expect("downloader");
     let request = make_request(&base_url, v2.len() as u64, Some(v2_artifact.sha512.clone()));
 
     let result = downloader
@@ -114,15 +108,15 @@ async fn degrades_gracefully_from_multipart_to_single_range_and_splits_batches()
     let batch_url = spawn_server(batch_state.clone()).await;
     let temp2 = tempfile::tempdir().expect("temp dir");
     let cache2 = seeded_cache(&temp2, &v1);
-    let batched_dl = DifferentialDownloader::new(
-        reqwest::Client::new(),
+    let batched_dl = DifferentialDownloader::http(
         HeaderMap::new(),
         cache2,
         TransferOptions {
             max_ranges_per_request: 2,
             ..TransferOptions::default()
         },
-    );
+    )
+    .expect("downloader");
     let batch_req = make_request(&batch_url, v2_multi.len() as u64, Some(v2_multi_art.sha512));
     let res = batched_dl
         .download(&batch_req, &DummyListener)
@@ -164,13 +158,18 @@ async fn recovers_when_cached_local_blocks_are_corrupted_on_disk() {
     corrupted[300_000] ^= 0xff;
     std::fs::write(&cached_pkg, &corrupted).expect("write corrupted");
 
-    let downloader = DifferentialDownloader::new(
-        reqwest::Client::new(),
-        HeaderMap::new(),
-        cache,
-        TransferOptions::default(),
-    );
-    let request = make_request(&base_url, v2.len() as u64, None);
+    let downloader =
+        DifferentialDownloader::http(HeaderMap::new(), cache, TransferOptions::default())
+            .expect("downloader");
+    // Unverified request (no sha512 and no pubkey) must fail closed before downloading.
+    let unverified_req = make_request(&base_url, v2.len() as u64, None);
+    assert!(matches!(
+        downloader.download(&unverified_req, &DummyListener).await,
+        Err(crate::Error::InvalidConfig(ref msg)) if msg.contains("sha512 or minisign pubkey")
+    ));
+    assert_eq!(state.requests.load(Ordering::SeqCst), 0);
+
+    let request = make_request(&base_url, v2.len() as u64, Some(v2_artifact.sha512));
 
     let result = downloader
         .download(&request, &DummyListener)

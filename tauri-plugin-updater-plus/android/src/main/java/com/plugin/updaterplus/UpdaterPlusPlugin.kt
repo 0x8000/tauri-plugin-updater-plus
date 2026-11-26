@@ -15,7 +15,7 @@ import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
 import java.io.File
-import kotlin.concurrent.thread
+import java.util.concurrent.Executors
 
 @InvokeArg
 class InstallApkArgs {
@@ -24,6 +24,10 @@ class InstallApkArgs {
 
 @TauriPlugin
 class UpdaterPlusPlugin(private val activity: Activity) : Plugin(activity) {
+    private val stagingExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "updater-plus-stage-apk").apply { isDaemon = true }
+    }
+
     @Volatile
     private var pendingApkFile: File? = null
 
@@ -43,12 +47,14 @@ class UpdaterPlusPlugin(private val activity: Activity) : Plugin(activity) {
             return
         }
 
-        thread(name = "updater-plus-stage-apk") {
+        stagingExecutor.execute {
             try {
                 val source = File(args.path)
                 if (!source.isFile || !source.canRead()) {
-                    invoke.reject("APK file not found or unreadable: ${args.path}")
-                    return@thread
+                    activity.runOnUiThread {
+                        invoke.reject("APK file not found or unreadable: ${args.path}")
+                    }
+                    return@execute
                 }
 
                 val stagedApk = stageApkForFileProvider(source)
@@ -73,7 +79,9 @@ class UpdaterPlusPlugin(private val activity: Activity) : Plugin(activity) {
                     }
                 }
             } catch (error: Exception) {
-                invoke.reject("Failed to stage Android APK: ${error.message}")
+                activity.runOnUiThread {
+                    invoke.reject("Failed to stage Android APK: ${error.message}")
+                }
             }
         }
     }
@@ -110,17 +118,21 @@ class UpdaterPlusPlugin(private val activity: Activity) : Plugin(activity) {
         if (source.canonicalFile == target.canonicalFile) {
             return target
         }
-        val temp = File(cacheDir, "pending-update.apk.tmp")
-        source.copyTo(temp, overwrite = true)
-        if (target.exists() && !target.delete()) {
+        val temp = File.createTempFile("pending-update-", ".apk.tmp", cacheDir)
+        try {
+            source.copyTo(temp, overwrite = true)
+            if (target.exists() && !target.delete()) {
+                throw IllegalStateException("Failed to replace previous staged APK")
+            }
+            if (!temp.renameTo(target)) {
+                temp.copyTo(target, overwrite = true)
+                temp.delete()
+            }
+            return target
+        } catch (error: Exception) {
             temp.delete()
-            throw IllegalStateException("Failed to replace previous staged APK")
+            throw error
         }
-        if (!temp.renameTo(target)) {
-            temp.copyTo(target, overwrite = true)
-            temp.delete()
-        }
-        return target
     }
 
     private fun launchApkInstall(apkFile: File) {

@@ -54,6 +54,24 @@ fn parses_tauri_static_json_with_blockmap_extensions_and_candidate_precedence() 
         "https://updates.example.com/myapp_0.2.0.tar.gz.blockmap"
     );
 
+    // Derived `.blockmap` URLs must strip presigned query strings and fragments.
+    let presigned = super::ReleasePlatform {
+        url: Url::parse("https://bucket.s3.amazonaws.com/app.exe?X-Amz-Signature=deadbeef#frag")
+            .expect("url"),
+        signature: None,
+        sha512: Some("hash==".into()),
+        size: Some(1234),
+        blockmap_url: None,
+        blockmap_size: None,
+    };
+    assert_eq!(
+        presigned
+            .resolved_blockmap_url()
+            .expect("derived presigned blockmap url")
+            .as_str(),
+        "https://bucket.s3.amazonaws.com/app.exe.blockmap"
+    );
+
     let roundtrip_json = manifest.to_tauri_json().expect("serialize tauri json");
     let reparsed = ReleaseManifest::parse(&roundtrip_json, &source).expect("reparse json");
     assert_eq!(reparsed.version, manifest.version);
@@ -94,7 +112,10 @@ releaseNotes: 'Reduced update download size'
         manifest.notes.as_deref(),
         Some("Reduced update download size")
     );
-    assert!(manifest.pub_date.is_some());
+    assert_eq!(
+        manifest.formatted_pub_date().as_deref(),
+        Some("2026-11-24T00:00:00Z")
+    );
     let single_json = manifest.to_tauri_json().expect("serialize single json");
     let reparsed_single = ReleaseManifest::parse(&single_json, &source).expect("reparse single");
     assert_eq!(reparsed_single.platforms, manifest.platforms);

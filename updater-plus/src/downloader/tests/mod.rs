@@ -13,6 +13,7 @@ use crate::cache::PackageCache;
 use crate::listener::{DownloadEvent, DownloadListener};
 use crate::verifier::VerifyExpectation;
 
+mod auth;
 mod differential;
 mod fallback;
 mod hosting;
@@ -25,6 +26,9 @@ pub(super) enum ServerRangeMode {
     NoRangeSupport,
     NoRangeAcceptNone,
     Error500,
+    AuthForbiddenRange,
+    BlockmapForbidden,
+    BlockmapUnauthorized,
 }
 
 #[derive(Clone)]
@@ -66,6 +70,9 @@ async fn serve_artifact(State(state): State<MockServerState>, headers: HeaderMap
 
     if matches!(state.mode, ServerRangeMode::Error500) {
         return (StatusCode::INTERNAL_SERVER_ERROR, "server failure").into_response();
+    }
+    if matches!(state.mode, ServerRangeMode::AuthForbiddenRange) && range_str.is_some() {
+        return (StatusCode::FORBIDDEN, "artifact range forbidden").into_response();
     }
 
     let total = state.artifact.len();
@@ -146,6 +153,12 @@ async fn serve_artifact(State(state): State<MockServerState>, headers: HeaderMap
 
 async fn serve_blockmap(State(state): State<MockServerState>) -> Response {
     state.blockmap_requests.fetch_add(1, Ordering::SeqCst);
+    if matches!(state.mode, ServerRangeMode::BlockmapForbidden) {
+        return (StatusCode::FORBIDDEN, "missing object on private S3").into_response();
+    }
+    if matches!(state.mode, ServerRangeMode::BlockmapUnauthorized) {
+        return (StatusCode::UNAUTHORIZED, "expired token").into_response();
+    }
     match &state.blockmap {
         Some(bytes) => (StatusCode::OK, (**bytes).clone()).into_response(),
         None => (StatusCode::NOT_FOUND, "missing blockmap").into_response(),

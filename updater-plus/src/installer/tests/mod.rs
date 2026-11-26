@@ -329,4 +329,44 @@ fn extracts_appimage_from_zip_handles_corrupt_zip_missing_target_and_skips_dirs(
         LinuxInstaller::install_appimage(&zip_path, &zip_header[..64], &dir_target),
         Err(Error::UnsupportedPlatform)
     ));
+
+    // Explicit `deb` / `rpm` / `appimage` bundle_type must reject mismatched package formats.
+    for (bundle, expected_fragment) in [
+        ("deb", "expected a .deb package"),
+        ("rpm", "expected a .rpm package"),
+    ] {
+        let mismatch_ctx = InstallContext {
+            app_name: "myapp".into(),
+            version: "0.2.0".into(),
+            extract_path: target.clone(),
+            bundle_type: Some(bundle.into()),
+            restart_after_install: true,
+            windows: None,
+        };
+        let err = LinuxInstaller::install(&zip_path, &mismatch_ctx)
+            .expect_err("format mismatch must fail");
+        assert!(
+            matches!(err, Error::InvalidPackageFormat(ref msg) if msg.contains(expected_fragment)),
+            "got {err:?}"
+        );
+    }
+
+    let fake_deb = dir.path().join("fake.deb");
+    let mut deb_bytes = b"!<arch>\ndebian-binary".to_vec();
+    deb_bytes.resize(64, 0);
+    std::fs::write(&fake_deb, &deb_bytes).expect("write fake deb");
+    let appimage_ctx = InstallContext {
+        app_name: "myapp".into(),
+        version: "0.2.0".into(),
+        extract_path: target.clone(),
+        bundle_type: Some("appimage".into()),
+        restart_after_install: true,
+        windows: None,
+    };
+    let appimage_err = LinuxInstaller::install(&fake_deb, &appimage_ctx)
+        .expect_err("deb package must be rejected for appimage bundle_type");
+    assert!(
+        matches!(appimage_err, Error::InvalidPackageFormat(ref msg) if msg.contains("expected an AppImage")),
+        "got {appimage_err:?}"
+    );
 }

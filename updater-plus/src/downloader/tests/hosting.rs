@@ -64,12 +64,9 @@ async fn degrades_s3_style_200_on_multi_range_into_single_range_differential_dow
 
     let temp = tempfile::tempdir().expect("temp dir");
     let cache = seeded_cache(&temp, &v1);
-    let downloader = DifferentialDownloader::new(
-        reqwest::Client::new(),
-        HeaderMap::new(),
-        cache,
-        TransferOptions::default(),
-    );
+    let downloader =
+        DifferentialDownloader::http(HeaderMap::new(), cache, TransferOptions::default())
+            .expect("downloader");
     let request = make_request(&base_url, v2.len() as u64, Some(v2_artifact.sha512));
 
     let result = downloader
@@ -79,6 +76,23 @@ async fn degrades_s3_style_200_on_multi_range_into_single_range_differential_dow
     assert_eq!(result.summary.mode, DownloadMode::Differential);
     assert!(result.summary.saved_percent > 75.0);
     assert!(state.bytes_sent.load(Ordering::SeqCst) < v2.len() / 3);
+    {
+        let seen = state.received_ranges.lock().expect("lock");
+        assert!(
+            seen.len() >= 3,
+            "expected 1 multi-range probe + >=2 single-range fetches, got {seen:?}"
+        );
+        assert!(
+            seen[0].as_deref().is_some_and(|h| h.contains(',')),
+            "first request must be multi-range: {seen:?}"
+        );
+        assert!(
+            seen[1..]
+                .iter()
+                .all(|h| h.as_deref().is_some_and(|v| !v.contains(','))),
+            "follow-ups must be single-range: {seen:?}"
+        );
+    }
     assert_eq!(std::fs::read(&result.path).expect("read"), v2);
 }
 
@@ -112,8 +126,7 @@ async fn explicit_disable_multi_range_skips_multipart_probe() {
 
     let temp = tempfile::tempdir().expect("temp dir");
     let cache = seeded_cache(&temp, &v1);
-    let downloader = DifferentialDownloader::new(
-        reqwest::Client::new(),
+    let downloader = DifferentialDownloader::http(
         HeaderMap::new(),
         cache,
         TransferOptions {
@@ -121,7 +134,8 @@ async fn explicit_disable_multi_range_skips_multipart_probe() {
             max_concurrent_ranges: 4,
             ..TransferOptions::default()
         },
-    );
+    )
+    .expect("downloader");
     let request = make_request(&base_url, v2.len() as u64, Some(v2_artifact.sha512));
 
     let result = downloader
@@ -290,17 +304,21 @@ async fn reuses_github_redirect_url_recovers_on_expiry_and_strips_cross_origin_a
         HeaderValue::from_static("gh_session=secret-cookie"),
     );
 
-    let downloader = DifferentialDownloader::new(
-        reqwest::Client::new(),
-        auth_headers,
+    let downloader = DifferentialDownloader::http(
+        auth_headers.clone(),
         cache,
         TransferOptions {
             use_multiple_range_request: Some(false),
             max_concurrent_ranges: 1,
             ..TransferOptions::default()
         },
+    )
+    .expect("downloader");
+    let request = make_request(
+        &origin_base,
+        v2.len() as u64,
+        Some(v2_artifact.sha512.clone()),
     );
-    let request = make_request(&origin_base, v2.len() as u64, Some(v2_artifact.sha512));
 
     let result = downloader
         .download(&request, &DummyListener)
@@ -316,4 +334,37 @@ async fn reuses_github_redirect_url_recovers_on_expiry_and_strips_cross_origin_a
     // Only 2 redirects total across 4 ranges: initial -> signed-v1, expiry -> signed-v2, then reused!
     assert_eq!(origin_state.redirect_hits.load(Ordering::SeqCst), 2);
     assert!(cdn_state.v2_hits.load(Ordering::SeqCst) >= 3);
+
+    // Concurrent single-range workers hitting an expired token simultaneously must serialize
+    // refresh (anti-thundering-herd): exactly 2 total redirects even with max_concurrent_ranges=4.
+    cdn_state.v1_hits.store(0, Ordering::SeqCst);
+    cdn_state.v2_hits.store(0, Ordering::SeqCst);
+    origin_state.redirect_hits.store(0, Ordering::SeqCst);
+    origin_state.origin_auth_hits.store(0, Ordering::SeqCst);
+
+    let temp_conc = tempfile::tempdir().expect("temp dir");
+    let cache_conc = seeded_cache(&temp_conc, &v1);
+    let conc_downloader = DifferentialDownloader::http(
+        auth_headers,
+        cache_conc,
+        TransferOptions {
+            use_multiple_range_request: Some(false),
+            max_concurrent_ranges: 4,
+            ..TransferOptions::default()
+        },
+    )
+    .expect("downloader");
+    let conc_req = make_request(&origin_base, v2.len() as u64, Some(v2_artifact.sha512));
+    let conc_res = conc_downloader
+        .download(&conc_req, &DummyListener)
+        .await
+        .expect("concurrent redirect refresh differential download");
+    assert_eq!(conc_res.summary.mode, DownloadMode::Differential);
+    assert_eq!(std::fs::read(&conc_res.path).expect("read"), v2);
+    assert_eq!(cdn_state.leaked_auth_headers.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        origin_state.redirect_hits.load(Ordering::SeqCst),
+        2,
+        "concurrent expired CDN tokens must trigger only a single refresh redirect"
+    );
 }

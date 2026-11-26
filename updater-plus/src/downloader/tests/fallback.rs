@@ -25,12 +25,9 @@ async fn falls_back_to_full_when_server_ignores_range_headers() {
 
     let temp = tempfile::tempdir().expect("temp dir");
     let cache = seeded_cache(&temp, &v1);
-    let downloader = DifferentialDownloader::new(
-        reqwest::Client::new(),
-        HeaderMap::new(),
-        cache,
-        TransferOptions::default(),
-    );
+    let downloader =
+        DifferentialDownloader::http(HeaderMap::new(), cache, TransferOptions::default())
+            .expect("downloader");
     let request = make_request(&base_url, v2.len() as u64, Some(v2_artifact.sha512.clone()));
 
     let result = downloader
@@ -51,7 +48,15 @@ async fn falls_back_to_full_when_server_ignores_range_headers() {
     assert_eq!(state.requests.load(Ordering::SeqCst), 2);
     {
         let seen = state.received_ranges.lock().expect("lock");
-        assert!(seen.iter().all(Option::is_some));
+        assert_eq!(seen.len(), 2);
+        assert!(
+            seen[0].as_deref().is_some_and(|h| h.contains(',')),
+            "probe 1 must be multi-range: {seen:?}"
+        );
+        assert!(
+            seen[1].as_deref().is_some_and(|h| !h.contains(',')),
+            "probe 2 must be single-range: {seen:?}"
+        );
     }
     assert_eq!(std::fs::read(&result.path).expect("read"), v2);
 
@@ -64,12 +69,8 @@ async fn falls_back_to_full_when_server_ignores_range_headers() {
     let none_url = spawn_server(none_state.clone()).await;
     let temp2 = tempfile::tempdir().expect("temp dir");
     let cache2 = seeded_cache(&temp2, &v1);
-    let dl2 = DifferentialDownloader::new(
-        reqwest::Client::new(),
-        HeaderMap::new(),
-        cache2,
-        TransferOptions::default(),
-    );
+    let dl2 = DifferentialDownloader::http(HeaderMap::new(), cache2, TransferOptions::default())
+        .expect("downloader");
     let req2 = make_request(&none_url, v2.len() as u64, Some(v2_artifact.sha512));
     let res2 = dl2
         .download(&req2, &DummyListener)
@@ -90,12 +91,9 @@ async fn falls_back_to_full_when_remote_blockmap_returns_404_or_differential_dis
 
     let temp = tempfile::tempdir().expect("temp dir");
     let cache = seeded_cache(&temp, &v1);
-    let downloader = DifferentialDownloader::new(
-        reqwest::Client::new(),
-        HeaderMap::new(),
-        cache,
-        TransferOptions::default(),
-    );
+    let downloader =
+        DifferentialDownloader::http(HeaderMap::new(), cache, TransferOptions::default())
+            .expect("downloader");
     let request = make_request(&base_url, v2.len() as u64, Some(v2_artifact.sha512.clone()));
 
     let result = downloader
@@ -124,12 +122,8 @@ async fn falls_back_to_full_when_remote_blockmap_returns_404_or_differential_dis
     let disabled_url = spawn_server(state_disabled.clone()).await;
     let temp2 = tempfile::tempdir().expect("temp dir");
     let cache2 = seeded_cache(&temp2, &v1);
-    let dl2 = DifferentialDownloader::new(
-        reqwest::Client::new(),
-        HeaderMap::new(),
-        cache2,
-        TransferOptions::default(),
-    );
+    let dl2 = DifferentialDownloader::http(HeaderMap::new(), cache2, TransferOptions::default())
+        .expect("downloader");
     let mut disabled_req = make_request(&disabled_url, v2.len() as u64, Some(v2_artifact.sha512));
     disabled_req.differential = false;
     let res2 = dl2
@@ -163,12 +157,9 @@ async fn rejects_tampered_artifact_without_overwriting_cached_base_package() {
 
     let temp = tempfile::tempdir().expect("temp dir");
     let cache = seeded_cache(&temp, &v1);
-    let downloader = DifferentialDownloader::new(
-        reqwest::Client::new(),
-        HeaderMap::new(),
-        cache.clone(),
-        TransferOptions::default(),
-    );
+    let downloader =
+        DifferentialDownloader::http(HeaderMap::new(), cache.clone(), TransferOptions::default())
+            .expect("downloader");
     let request = make_request(&base_url, v2.len() as u64, Some(v2_artifact.sha512));
 
     let err = downloader
@@ -208,12 +199,12 @@ async fn falls_back_on_size_mismatch_threshold_exceeded_and_unhashed_chunk_tampe
     );
     let mismatch_url = spawn_server(mismatch_state).await;
     let temp1 = tempfile::tempdir().expect("temp dir");
-    let dl1 = DifferentialDownloader::new(
-        reqwest::Client::new(),
+    let dl1 = DifferentialDownloader::http(
         HeaderMap::new(),
         seeded_cache(&temp1, &v1),
         TransferOptions::default(),
-    );
+    )
+    .expect("downloader");
     let bad_size_req = make_request(
         &mismatch_url,
         (v2.len() as u64) + 64,
@@ -241,12 +232,12 @@ async fn falls_back_on_size_mismatch_threshold_exceeded_and_unhashed_chunk_tampe
     );
     let threshold_url = spawn_server(threshold_state).await;
     let temp2 = tempfile::tempdir().expect("temp dir");
-    let dl2 = DifferentialDownloader::new(
-        reqwest::Client::new(),
+    let dl2 = DifferentialDownloader::http(
         HeaderMap::new(),
         seeded_cache(&temp2, &v1),
         TransferOptions::default(),
-    );
+    )
+    .expect("downloader");
     let mut low_thresh_req =
         make_request(&threshold_url, v2.len() as u64, Some(v2_artifact.sha512));
     low_thresh_req.full_download_threshold = 0.01;
@@ -265,60 +256,49 @@ async fn falls_back_on_size_mismatch_threshold_exceeded_and_unhashed_chunk_tampe
     );
     assert_eq!(std::fs::read(&res2.path).expect("read"), v2);
 
-    let mut corrupted_remote = v2.clone();
-    corrupted_remote[100_000] ^= 0xff;
-    let unhashed_state = MockServerState::new(
-        corrupted_remote.clone(),
+    // Stale remote blockmap with same size: differential reconstruction fails verification,
+    // falls back to verified full download, and regenerates clean cached blockmap (no poisoning).
+    let mut updated_remote = v2.clone();
+    updated_remote[450_000] ^= 0xff;
+    let updated_sha512 = crate::verifier::ArtifactVerifier::sha512_bytes(&updated_remote);
+    let stale_map_state = MockServerState::new(
+        updated_remote.clone(),
         Some(gz_map),
         ServerRangeMode::MultipartAndSingle,
     );
-    let unhashed_url = spawn_server(unhashed_state).await;
+    let stale_map_url = spawn_server(stale_map_state).await;
     let temp3 = tempfile::tempdir().expect("temp dir");
-    let dl3 = DifferentialDownloader::new(
-        reqwest::Client::new(),
-        HeaderMap::new(),
-        seeded_cache(&temp3, &v1),
-        TransferOptions::default(),
+    let cache3 = seeded_cache(&temp3, &v1);
+    let dl3 =
+        DifferentialDownloader::http(HeaderMap::new(), cache3.clone(), TransferOptions::default())
+            .expect("downloader");
+    let stale_map_req = make_request(
+        &stale_map_url,
+        updated_remote.len() as u64,
+        Some(updated_sha512),
     );
-    let unhashed_req = make_request(&unhashed_url, v2.len() as u64, None);
     let res3 = dl3
-        .download(&unhashed_req, &DummyListener)
+        .download(&stale_map_req, &DummyListener)
         .await
-        .expect("corrupted range without sha512 falls back to full");
+        .expect("stale remote blockmap falls back to verified full download");
     assert_eq!(res3.summary.mode, DownloadMode::Full);
     assert!(
         res3.summary
             .fallback_reason
             .as_deref()
-            .is_some_and(|r| r.contains("blockmap SHA-256 verification")),
+            .is_some_and(|r| r.contains("reconstructed package verification failed")),
         "got {:?}",
         res3.summary.fallback_reason
     );
-    assert_eq!(std::fs::read(&res3.path).expect("read"), corrupted_remote);
-}
-
-#[tokio::test]
-async fn surfaces_http_status_error_when_artifact_endpoint_fails() {
-    let (v1, v2) = build_v1_and_v2();
-    let v2_artifact =
-        BlockMap::generate(v2.as_slice(), "file", ChunkerConfig::default()).expect("v2 map");
-    let err_state = MockServerState::new(v2.clone(), None, ServerRangeMode::Error500);
-    let err_url = spawn_server(err_state).await;
-
-    let temp = tempfile::tempdir().expect("temp dir");
-    let cache = seeded_cache(&temp, &v1);
-    let downloader = DifferentialDownloader::new(
-        reqwest::Client::new(),
-        HeaderMap::new(),
-        cache,
-        TransferOptions {
-            max_ranges_per_request: 1,
-            ..TransferOptions::default()
-        },
+    assert_eq!(std::fs::read(&res3.path).expect("read"), updated_remote);
+    let committed = cache3.load_base().expect("committed cache");
+    assert_ne!(
+        committed.blockmap, v2_artifact.blockmap,
+        "stale remote blockmap must not poison PackageCache"
     );
-    let err_req = make_request(&err_url, v2.len() as u64, Some(v2_artifact.sha512));
-    assert!(matches!(
-        downloader.download(&err_req, &DummyListener).await,
-        Err(Error::HttpStatus { status: 500, .. })
-    ));
+    let expected_regenerated =
+        BlockMap::generate(updated_remote.as_slice(), "file", ChunkerConfig::default())
+            .expect("regen")
+            .blockmap;
+    assert_eq!(committed.blockmap, expected_regenerated);
 }

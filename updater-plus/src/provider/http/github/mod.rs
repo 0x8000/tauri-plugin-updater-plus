@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -25,7 +26,7 @@ const DEFAULT_API_BASE: &str = "https://api.github.com/";
 const DEFAULT_WEB_BASE: &str = "https://github.com/";
 
 /// Builder for [`GitHubProvider`].
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct GitHubProviderBuilder {
     owner: String,
     repo: String,
@@ -35,6 +36,21 @@ pub struct GitHubProviderBuilder {
     api_base_url: Url,
     web_base_url: Url,
     downloader: Option<HttpDownloader>,
+}
+
+impl fmt::Debug for GitHubProviderBuilder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GitHubProviderBuilder")
+            .field("owner", &self.owner)
+            .field("repo", &self.repo)
+            .field("manifest_name", &self.manifest_name)
+            .field("has_token", &self.token.is_some())
+            .field("include_prerelease", &self.include_prerelease)
+            .field("api_base_url", &self.api_base_url)
+            .field("web_base_url", &self.web_base_url)
+            .field("downloader", &self.downloader)
+            .finish()
+    }
 }
 
 impl GitHubProviderBuilder {
@@ -111,6 +127,7 @@ impl GitHubProviderBuilder {
                 .with_transfer_options(single_opts)
                 .with_added_authorizer(Arc::new(GitHubAuthorizer {
                     token: self.token.clone(),
+                    api_origin: self.api_base_url.origin(),
                 }))
         } else {
             base_downloader.with_transfer_options(single_opts)

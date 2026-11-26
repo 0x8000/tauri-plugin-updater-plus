@@ -130,6 +130,17 @@ def step_assert_update_failed(context, expected_kind: str) -> None:
     assert out.error_kind == expected_kind, f"expected {expected_kind}, got {out.error_kind}: {out}"
 
 
+@then('the error message contains "{expected_fragment}" and does not contain "{secret_fragment}"')
+def step_assert_error_redaction(context, expected_fragment: str, secret_fragment: str) -> None:
+    out = context.app.last_outcome
+    assert out is not None
+    assert out.message is not None, f"expected error message, got None: {out}"
+    assert expected_fragment in out.message, f"expected {expected_fragment!r} in {out.message!r}"
+    assert secret_fragment not in out.message, (
+        f"secret {secret_fragment!r} leaked in {out.message!r}"
+    )
+
+
 @then('the cached base package still matches artifact "{version:S}"')
 def step_assert_cached_preserved(context, version: str) -> None:
     expected = context.artifacts.path_for(version).read_bytes()

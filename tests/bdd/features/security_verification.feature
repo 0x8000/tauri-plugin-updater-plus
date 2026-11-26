@@ -61,3 +61,13 @@ Feature: Cryptographic verification anti-replay and fail-closed update security
     Then the update fails with error kind "MissingSignedVersion"
     And the cached base package still matches artifact "0.1.0"
     And the installed AppImage matches artifact "0.1.0" with mode "0750"
+
+  Scenario: HTTP error messages redact presigned query tokens from failing artifact URLs
+    Given Nginx server "primary" publishes a presigned manifest "latest.json" for missing artifact "0.2.0" with query "X-Amz-Signature=supersecret999"
+    And the updater configures differential to "false"
+    And the updater endpoints are "nginx:primary/latest.json"
+    When the application executes "download_and_install"
+    Then the update fails with error kind "HttpStatus"
+    And the error message contains "?<redacted>" and does not contain "supersecret999"
+    And the cached base package still matches artifact "0.1.0"
+    And the installed AppImage matches artifact "0.1.0" with mode "0750"

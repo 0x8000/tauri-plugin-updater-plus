@@ -1,9 +1,9 @@
-use crate::Result;
 use crate::blockmap::BlockMap;
 use crate::cache::PackageCache;
 use crate::planner::{ByteRange, DownloadPlan, PlanOptions};
 use crate::provider::{DownloadSession, RangeCapability, UpdateProvider};
 use crate::session::{DiffSession, DiffSessionOpenParams};
+use crate::{Result, TransportErrorKind};
 
 use super::request::ProviderDownloadRequest;
 
@@ -69,7 +69,17 @@ pub(super) async fn prepare_differential(
         .await
     {
         Ok(bytes) => bytes,
-        Err(error) if error.is_auth_error() => return Err(error),
+        // Fail fast on 401 Unauthorized, but allow 403 Forbidden on `.blockmap` to fall back
+        // to `fetch_full()` (private S3 buckets without `s3:ListBucket` and presigned URLs
+        // without an explicit blockmap return 403 for missing `.blockmap` objects).
+        Err(error)
+            if matches!(
+                error.transport_kind(),
+                Some(TransportErrorKind::Unauthorized)
+            ) =>
+        {
+            return Err(error);
+        }
         Err(error) => {
             return Ok(PlanResolution::Fallback {
                 reason: format!("remote blockmap unavailable: {error}"),

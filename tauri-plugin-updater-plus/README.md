@@ -23,7 +23,7 @@ Add `tauri-plugin-updater-plus` to `src-tauri/Cargo.toml`:
 ```toml
 # add to `[dependencies]` to target Linux, Windows, macOS, and Android
 [dependencies]
-tauri-plugin-updater-plus = "0.4"
+tauri-plugin-updater-plus = "0.5"
 # alternatively with Git:
 tauri-plugin-updater-plus = { git = "https://github.com/0x8000/updater-plus", branch = "master" }
 ```

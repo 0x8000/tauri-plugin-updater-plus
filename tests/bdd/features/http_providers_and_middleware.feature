@@ -18,6 +18,16 @@ Feature: Built-in HTTP providers middleware customization and range coalescing e
     And CDN gateway "gh" recorded 2 redirects 0 leaked credentials and at least 4 single-range 206 responses
     And the installed AppImage matches artifact "0.2.0" with mode "0750"
 
+  Scenario: GitHubProvider never leaks its bearer token when a manifest points to a third-party external host
+    Given a running CDN release gateway "gh" in "github_private" mode
+    And CDN gateway "gh" publishes private GitHub release "0.2.0" with token "ghp_bdd_secret" pointing to external CDN
+    And the updater uses GitHubProvider against "gh" with token "ghp_bdd_secret"
+    When the application executes "download_and_install"
+    Then the update succeeds in "differential" mode to version "0.2.0"
+    And the transfer saves more than 70.0 percent of package bytes
+    And CDN gateway "gh" recorded 0 redirects 0 leaked credentials and at least 4 single-range 206 responses
+    And the installed AppImage matches artifact "0.2.0" with mode "0750"
+
   Scenario: S3Provider authenticates manifest blockmap and single-range 206 transfers with verified AWS SigV4 and STS token
     Given a running CDN release gateway "s3" in "s3_sigv4" mode
     And CDN gateway "s3" enforces S3 SigV4 in region "us-west-2" with STS token "BDD_STS_TOKEN_V1"
@@ -27,6 +37,19 @@ Feature: Built-in HTTP providers middleware customization and range coalescing e
     Then the update succeeds in "differential" mode to version "0.2.0"
     And the transfer saves more than 70.0 percent of package bytes
     And CDN gateway "s3" verified at least 6 SigV4 requests and rejected 0
+    And the installed AppImage matches artifact "0.2.0" with mode "0750"
+
+  Scenario: S3Provider falls back to verified full download when private bucket returns 403 for missing blockmap
+    Given a running CDN release gateway "s3" in "s3_sigv4" mode
+    And CDN gateway "s3" enforces S3 SigV4 in region "us-west-2" with STS token "BDD_STS_TOKEN_V1"
+    And CDN gateway "s3" returns 403 for missing blockmaps
+    And CDN gateway "s3" publishes artifact "0.2.0" as "latest.json" in "tauri" format with notes "Private S3 missing blockmap"
+    And CDN gateway "s3" removes the blockmap for "0.2.0"
+    And the updater uses S3Provider in region "us-west-2" with STS token "BDD_STS_TOKEN_V1" for "cdn:s3/latest.json"
+    When the application executes "download_and_install"
+    Then the update succeeds in "full" mode to version "0.2.0"
+    And the fallback reason contains "403"
+    And CDN gateway "s3" verified at least 3 SigV4 full-fallback requests and rejected 0
     And the installed AppImage matches artifact "0.2.0" with mode "0750"
 
   Scenario: Custom HTTP retry middleware recovers from transient 503s while per-hop authorizer strips custom X-API-Key across origins

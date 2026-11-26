@@ -14,9 +14,12 @@ fn is_minisign_verify_failure(err: &Error) -> bool {
     matches!(
         err,
         Error::Signature(msg)
-            if msg.starts_with("minisign verification failed:")
-                && msg.to_ascii_lowercase().contains("verification failed")
-                && !msg.contains("different key")
+            if msg
+                .strip_prefix("minisign verification failed:")
+                .is_some_and(|detail| {
+                    let lower = detail.to_ascii_lowercase();
+                    lower.contains("verification failed") && !lower.contains("different key")
+                })
     )
 }
 

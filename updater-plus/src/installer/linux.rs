@@ -14,24 +14,38 @@ pub(crate) struct LinuxInstaller;
 impl LinuxInstaller {
     pub(crate) fn install(package_path: &Path, context: &InstallContext) -> Result<()> {
         let header = Self::read_header(package_path)?;
+        match context.bundle_type.as_deref() {
+            Some("deb") => {
+                if !infer::archive::is_deb(&header) {
+                    return Err(Error::InvalidPackageFormat(
+                        "expected a .deb package for deb installation".into(),
+                    ));
+                }
+                return Self::install_system_package(package_path, "dpkg", "-i");
+            }
+            Some("rpm") => {
+                if !infer::archive::is_rpm(&header) {
+                    return Err(Error::InvalidPackageFormat(
+                        "expected a .rpm package for rpm installation".into(),
+                    ));
+                }
+                return Self::install_system_package(package_path, "rpm", "-U");
+            }
+            Some("appimage") => {
+                if infer::archive::is_deb(&header) || infer::archive::is_rpm(&header) {
+                    return Err(Error::InvalidPackageFormat(
+                        "expected an AppImage package for appimage installation".into(),
+                    ));
+                }
+                return Self::install_appimage(package_path, &header, &context.extract_path);
+            }
+            _ => {}
+        }
         if infer::archive::is_deb(&header) {
             return Self::install_system_package(package_path, "dpkg", "-i");
         }
         if infer::archive::is_rpm(&header) {
             return Self::install_system_package(package_path, "rpm", "-U");
-        }
-        match context.bundle_type.as_deref() {
-            Some("deb") => {
-                return Err(Error::InvalidPackageFormat(
-                    "expected a .deb package for deb installation".into(),
-                ));
-            }
-            Some("rpm") => {
-                return Err(Error::InvalidPackageFormat(
-                    "expected a .rpm package for rpm installation".into(),
-                ));
-            }
-            _ => {}
         }
         Self::install_appimage(package_path, &header, &context.extract_path)
     }
@@ -157,9 +171,16 @@ impl LinuxInstaller {
             if let Some(mut stdin) = child.stdin.take() {
                 writeln!(stdin, "{password}")?;
             }
-            if child.wait()?.success() {
+            let output = child.wait_with_output()?;
+            if output.status.success() {
                 return Ok(());
             }
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::Install(format!(
+                "package installation via `sudo -S {tool} {flag}` exited with status {}: {}",
+                output.status,
+                stderr.trim()
+            )));
         }
 
         let status = Command::new("sudo")
