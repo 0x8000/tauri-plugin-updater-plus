@@ -1,0 +1,175 @@
+name: benchmark-releases
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Optional preset target ID from benchmarks/repos.json (empty = all)
+        required: false
+        default: ""
+      repo:
+        description: Optional ad-hoc GitHub repo override (owner/repo)
+        required: false
+        default: ""
+      asset_pattern:
+        description: Regex for ad-hoc repo release asset (required when repo is set)
+        required: false
+        default: ""
+      release_count:
+        description: Number of recent releases to chain (rev1 -> ... -> revN)
+        required: false
+        default: "4"
+  schedule:
+    - cron: "0 3 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.resolve-matrix.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Unit-test benchmark runner
+        run: |
+          python3 -m unittest discover -s benchmarks -p "test_*.py" -v
+
+      - name: Resolve benchmark target matrix
+        id: resolve-matrix
+        env:
+          INPUT_TARGET: ${{ inputs.target }}
+          INPUT_REPO: ${{ inputs.repo }}
+          INPUT_ASSET_PATTERN: ${{ inputs.asset_pattern }}
+          INPUT_RELEASE_COUNT: ${{ inputs.release_count || '4' }}
+        run: |
+          set -euo pipefail
+          args=(list-matrix --config benchmarks/repos.json --release-count "$INPUT_RELEASE_COUNT")
+          if [[ -n "$INPUT_TARGET" ]]; then
+            args+=(--target "$INPUT_TARGET")
+          fi
+          if [[ -n "$INPUT_REPO" ]]; then
+            args+=(--repo "$INPUT_REPO" --asset-pattern "$INPUT_ASSET_PATTERN")
+          fi
+          matrix_json="$(python3 benchmarks/run_release_benchmark.py "${args[@]}")"
+          echo "matrix=${matrix_json}" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build benchmark_update binary
+        run: |
+          cargo build -p updater-plus --release --features "http,cli" --example benchmark_update
+
+      - name: Upload benchmark_update binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-update-bin
+          path: target/release/examples/benchmark_update
+          retention-days: 1
+
+  benchmark:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Download benchmark_update binary
+        uses: actions/download-artifact@v4
+        with:
+          name: benchmark-update-bin
+          path: bin
+
+      - name: Run chained end-to-end differential benchmark
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_ID: ${{ matrix.target.id }}
+          TARGET_REPO: ${{ matrix.target.repo }}
+          TARGET_ASSET_PATTERN: ${{ matrix.target.asset_pattern }}
+          TARGET_FORMAT: ${{ matrix.target.format }}
+          TARGET_RELEASE_COUNT: ${{ matrix.target.release_count }}
+          TARGET_INCLUDE_PRERELEASE: ${{ matrix.target.include_prerelease }}
+        run: |
+          set -euo pipefail
+          chmod +x bin/benchmark_update
+          args=(
+            run
+            --binary bin/benchmark_update
+            --output-dir benchmark-results
+            --target "$TARGET_ID"
+            --repo "$TARGET_REPO"
+            --asset-pattern "$TARGET_ASSET_PATTERN"
+            --format-label "$TARGET_FORMAT"
+            --release-count "$TARGET_RELEASE_COUNT"
+          )
+          if [[ "$TARGET_INCLUDE_PRERELEASE" == "true" ]]; then
+            args+=(--include-prerelease)
+          fi
+          python3 benchmarks/run_release_benchmark.py "${args[@]}"
+
+      - name: Upload per-target result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-result-${{ matrix.target.id }}
+          path: benchmark-results/*.json
+          retention-days: 14
+
+  summarize:
+    needs: benchmark
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Download per-target results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: benchmark-result-*
+          path: collected-results
+
+      - name: Generate summary report and enforce hash verification
+        run: |
+          python3 benchmarks/run_release_benchmark.py summarize \
+            --input-dir collected-results \
+            --output-md benchmark-report/summary.md \
+            --output-json benchmark-report/summary.json \
+            --step-summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload combined benchmark report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-report
+          path: benchmark-report/
+          retention-days: 30

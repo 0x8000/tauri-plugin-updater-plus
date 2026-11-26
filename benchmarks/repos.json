@@ -1,0 +1,47 @@
+{
+  "defaultReleaseCount": 4,
+  "targets": [
+    {
+      "assetPattern": "^Paseo-x86_64\\.AppImage$",
+      "format": "AppImage (Electron)",
+      "id": "paseo-appimage",
+      "includePrerelease": false,
+      "repo": "getpaseo/paseo"
+    },
+    {
+      "assetPattern": "^Paseo-[0-9.]+-arm64\\.zip$",
+      "format": "macOS ZIP (Electron)",
+      "id": "paseo-mac-zip",
+      "includePrerelease": false,
+      "repo": "getpaseo/paseo"
+    },
+    {
+      "assetPattern": "^Clash\\.Verge_.*_x64-setup\\.exe$",
+      "format": "NSIS Setup (Tauri)",
+      "id": "clash-verge-nsis",
+      "includePrerelease": false,
+      "repo": "clash-verge-rev/clash-verge-rev"
+    },
+    {
+      "assetPattern": "^LocalSend-.*-android-arm64v8\\.apk$",
+      "format": "Android APK (Flutter)",
+      "id": "localsend-apk",
+      "includePrerelease": false,
+      "repo": "localsend/localsend"
+    },
+    {
+      "assetPattern": "^rustdesk-.*-aarch64-signed\\.apk$",
+      "format": "Android APK (Rust+Flutter)",
+      "id": "rustdesk-apk",
+      "includePrerelease": false,
+      "repo": "rustdesk/rustdesk"
+    },
+    {
+      "assetPattern": "^Obsidian-[0-9.]+\\.AppImage$",
+      "format": "AppImage (Electron)",
+      "id": "obsidian-appimage",
+      "includePrerelease": false,
+      "repo": "obsidianmd/obsidian-releases"
+    }
+  ]
+}

@@ -62,7 +62,7 @@ required-features = ["cli"]
 
 [[example]]
 name = "benchmark_update"
-path = "examples/benchmark_update.rs"
+path = "examples/benchmark_update/main.rs"
 required-features = ["http", "cli"]
 
 [[example]]
